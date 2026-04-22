@@ -17,6 +17,7 @@ pub mod postprocess;
 pub mod postprocess_merge;
 pub mod preprocess;
 pub mod reading_order;
+pub mod regions;
 
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
@@ -28,3 +29,4 @@ pub use postprocess::{
 pub use postprocess_merge::{iou_aabb, merge_manual_with_auto};
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
 pub use reading_order::{compute_reading_order, ReadingDirection};
+pub use regions::{region_for_box, Region, RegionRole, RegionShape};
