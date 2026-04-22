@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <title>docseg — character segmentation demo</title>
   <link rel="stylesheet" href="style.css" />
-  <!-- onnxruntime-web: WebGPU EP + wasm fallback. Pinned to a known-good version. -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.webgpu.min.js"></script>
 </head>
 <body>
@@ -14,14 +13,59 @@
       Open image
       <input id="file" type="file" accept="image/png,image/jpeg" />
     </label>
-    <button id="export" disabled>Export all (zip)</button>
+    <button id="export" disabled>Export zip</button>
+    <button id="mode-auto" class="mode-btn mode-active">Auto order</button>
+    <button id="mode-draw" class="mode-btn">Draw order</button>
+    <button id="mode-reset" class="mode-btn" title="Reset custom order">Reset</button>
+    <label class="toggle">
+      <input id="show-order" type="checkbox" checked />
+      Show labels
+    </label>
     <span id="status">initializing…</span>
   </header>
   <div id="banner" hidden></div>
+  <div id="controls">
+    <label>
+      Direction
+      <select id="direction">
+        <option value="vertical-rtl" selected>Vertical RTL (Yi / classical CJK)</option>
+        <option value="vertical-ltr">Vertical LTR</option>
+        <option value="horizontal-ltr">Horizontal LTR</option>
+      </select>
+    </label>
+    <label>
+      Region threshold
+      <input id="region-threshold" type="range" min="0.2" max="0.9" step="0.05" value="0.4" />
+      <output id="region-threshold-out">0.40</output>
+    </label>
+    <label>
+      Affinity threshold
+      <input id="affinity-threshold" type="range" min="0.1" max="0.9" step="0.05" value="0.3" />
+      <output id="affinity-threshold-out">0.30</output>
+    </label>
+    <label>
+      Erosion (px)
+      <input id="erosion-px" type="range" min="0" max="4" step="1" value="0" />
+      <output id="erosion-px-out">0</output>
+    </label>
+    <label>
+      Min area (px)
+      <input id="min-area" type="range" min="1" max="64" step="1" value="8" />
+      <output id="min-area-out">8</output>
+    </label>
+    <label class="toggle">
+      <input id="axis-aligned" type="checkbox" checked />
+      Axis-aligned boxes
+    </label>
+  </div>
   <main>
     <div id="canvas-wrap">
       <canvas id="canvas" width="0" height="0"></canvas>
     </div>
+    <aside id="ribbon-wrap">
+      <div id="ribbon-header">Reading order</div>
+      <div id="ribbon"></div>
+    </aside>
   </main>
   <script type="module" src="main.js"></script>
 </body>

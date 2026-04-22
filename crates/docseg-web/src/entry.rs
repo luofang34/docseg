@@ -6,12 +6,13 @@ use std::cell::RefCell;
 
 use docseg_core::postprocess::{charboxes_from_heatmap, CharBox, PostprocessOptions};
 use docseg_core::preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
+use docseg_core::reading_order::{compute_reading_order, ReadingDirection};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlImageElement};
 
 use crate::canvas::decode;
-use crate::render::{hit_test, paint};
+use crate::render::{hit_test, paint_with_order};
 
 /// One detected glyph as it crosses the JS boundary.
 #[derive(Serialize)]
@@ -27,6 +28,16 @@ struct DetectionOut {
     image: ImageMeta,
     model: &'static str,
     boxes: Vec<BoxOut>,
+    /// Box ids in reading order. Length equals `boxes.len()`.
+    order: Vec<u32>,
+}
+
+fn parse_direction(name: &str) -> ReadingDirection {
+    match name {
+        "vertical-ltr" => ReadingDirection::VerticalLtr,
+        "horizontal-ltr" => ReadingDirection::HorizontalLtr,
+        _ => ReadingDirection::VerticalRtl,
+    }
 }
 
 #[derive(Serialize)]
@@ -58,6 +69,10 @@ pub struct DocsegApp {
     last_image_bytes: RefCell<Vec<u8>>,
     /// Most recent CharBox list from postprocess.
     last_boxes: RefCell<Vec<CharBox>>,
+    /// Reading order indices covering `last_boxes`, computed by
+    /// `computeReadingOrder` or overridden via `setCustomOrder`.
+    /// Empty until a postprocess run completes.
+    last_order: RefCell<Vec<usize>>,
 }
 
 #[wasm_bindgen]
@@ -70,6 +85,7 @@ impl DocsegApp {
         Self {
             last_image_bytes: RefCell::new(Vec::new()),
             last_boxes: RefCell::new(Vec::new()),
+            last_order: RefCell::new(Vec::new()),
         }
     }
 
@@ -99,9 +115,16 @@ impl DocsegApp {
     /// `region_data` is the flat float32 region channel extracted by JS
     /// from the onnxruntime-web output tensor. `affinity_data` is the
     /// affinity channel; pass an empty array to disable inter-character
-    /// masking (word-level behavior). For Chinese / Yi / other vertically-
-    /// stacked cursive scripts pass the real affinity channel so
-    /// vertically-touching glyphs don't merge into one vertical blob.
+    /// masking (word-level behavior).
+    ///
+    /// `region_threshold`, `affinity_threshold`, `erosion_px`, `axis_aligned`,
+    /// and `min_component_area_px` map directly to `PostprocessOptions`. JS
+    /// calls this repeatedly as the user moves threshold sliders, reusing
+    /// the cached heatmap buffers to avoid rerunning inference.
+    ///
+    /// Reading order is automatically computed under the supplied
+    /// `reading_direction` and cached on the app; `computeReadingOrder` and
+    /// `setCustomOrder` overwrite it later.
     #[allow(clippy::too_many_arguments)]
     pub fn postprocess(
         &self,
@@ -114,6 +137,12 @@ impl DocsegApp {
         padded_h: u32,
         original_w: u32,
         original_h: u32,
+        region_threshold: f32,
+        affinity_threshold: f32,
+        erosion_px: u8,
+        axis_aligned: bool,
+        min_component_area_px: u32,
+        reading_direction: &str,
     ) -> Result<JsValue, JsError> {
         let pre = PreprocessOutput {
             tensor: Vec::new(),
@@ -127,15 +156,21 @@ impl DocsegApp {
         } else {
             Some(affinity_data.as_slice())
         };
-        let boxes = charboxes_from_heatmap(
-            &region_data,
-            affinity,
-            heatmap_w,
-            heatmap_h,
-            &pre,
-            PostprocessOptions::default(),
-        );
+        let opts = PostprocessOptions {
+            region_threshold,
+            affinity_threshold,
+            erosion_px,
+            min_component_area_px,
+            axis_aligned,
+            ..PostprocessOptions::default()
+        };
+        let boxes =
+            charboxes_from_heatmap(&region_data, affinity, heatmap_w, heatmap_h, &pre, opts);
+        let direction = parse_direction(reading_direction);
+        let order = compute_reading_order(&boxes, direction);
         *self.last_boxes.borrow_mut() = boxes.clone();
+        *self.last_order.borrow_mut() = order.clone();
+
         let out = DetectionOut {
             image: ImageMeta {
                 width: original_w,
@@ -156,19 +191,73 @@ impl DocsegApp {
                     score: b.score,
                 })
                 .collect(),
+            order: order.iter().map(|&i| i as u32).collect(),
         };
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&format!("{e}")))
     }
 
+    /// Recompute the reading order under a different direction without
+    /// redoing postprocess. Returns the new order as a Uint32Array.
+    #[wasm_bindgen(js_name = computeReadingOrder)]
+    pub fn compute_reading_order_js(&self, direction: &str) -> Vec<u32> {
+        let dir = parse_direction(direction);
+        let order = compute_reading_order(&self.last_boxes.borrow(), dir);
+        *self.last_order.borrow_mut() = order.clone();
+        order.iter().map(|&i| i as u32).collect()
+    }
+
+    /// Set a user-drawn custom reading order. Silently clamps / filters
+    /// invalid indices; never panics. Callers should pass a permutation of
+    /// `0..last_boxes.len()` but partial orderings are accepted (unlisted
+    /// boxes are appended in their original detection order).
+    #[wasm_bindgen(js_name = setCustomOrder)]
+    pub fn set_custom_order(&self, indices: Vec<u32>) {
+        let n = self.last_boxes.borrow().len();
+        let mut seen = vec![false; n];
+        let mut order = Vec::with_capacity(n);
+        for &i in &indices {
+            let idx = i as usize;
+            if idx < n && !seen[idx] {
+                seen[idx] = true;
+                order.push(idx);
+            }
+        }
+        for (i, s) in seen.iter().enumerate() {
+            if !*s {
+                order.push(i);
+            }
+        }
+        *self.last_order.borrow_mut() = order;
+    }
+
     /// Paint the source image + per-character overlay onto a canvas
-    /// context, using the boxes from the most recent `postprocess` call.
+    /// context, using the boxes + reading order from the most recent
+    /// `postprocess` call.
+    ///
+    /// `show_order` turns numeric labels and reading-order arrows on; when
+    /// `false`, only the box outlines are drawn. `highlight_id < 0`
+    /// disables the highlight pass.
     pub fn paint(
         &self,
         ctx: &CanvasRenderingContext2d,
         img: &HtmlImageElement,
+        show_order: bool,
+        highlight_id: i32,
     ) -> Result<(), JsError> {
-        paint(ctx, img, &self.last_boxes.borrow())
-            .map_err(|e| JsError::new(&format!("paint failed: {e:?}")))
+        let highlight = if highlight_id >= 0 {
+            Some(highlight_id as usize)
+        } else {
+            None
+        };
+        paint_with_order(
+            ctx,
+            img,
+            &self.last_boxes.borrow(),
+            &self.last_order.borrow(),
+            show_order,
+            highlight,
+        )
+        .map_err(|e| JsError::new(&format!("paint failed: {e:?}")))
     }
 
     /// Hit-test the last postprocess result. Returns the 0-based id of the

@@ -15,6 +15,7 @@ pub mod model;
 
 pub mod postprocess;
 pub mod preprocess;
+pub mod reading_order;
 
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
@@ -24,3 +25,4 @@ pub use postprocess::{
     charboxes_from_heatmap, components_from_heatmap, CharBox, PostprocessOptions,
 };
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
+pub use reading_order::{compute_reading_order, ReadingDirection};

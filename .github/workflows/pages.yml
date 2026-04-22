@@ -1,0 +1,75 @@
+name: Deploy docseg to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# One deploy at a time, cancel any in-flight run when a new push lands.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + wasm32)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Run core tests
+        run: cargo test --workspace --all-targets
+
+      - name: Build wasm (release)
+        run: wasm-pack build crates/docseg-web --target web --release --out-dir ../../web/pkg
+
+      # Pages will fetch the CRAFT ONNX at runtime from the URL injected via
+      # the DOCSEG_MODEL_URL repository variable — see main.js. If unset, the
+      # demo falls back to ./models/craft_mlt_25k.onnx (convenient for local
+      # dev, 404s on Pages — that's expected until you set the variable).
+      - name: Inject model URL
+        if: vars.DOCSEG_MODEL_URL != ''
+        run: |
+          cat >> web/index.html <<EOF
+          <script>window.DOCSEG_MODEL_URL = "${{ vars.DOCSEG_MODEL_URL }}";</script>
+          EOF
+
+      - name: Prepare deploy artifact
+        run: |
+          # Strip anything we don't want on Pages — the local model file,
+          # verification overlay, etc. web/pkg/ stays; the wasm is the
+          # whole point.
+          mkdir -p deploy
+          cp -R web/* deploy/
+          rm -rf deploy/models
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

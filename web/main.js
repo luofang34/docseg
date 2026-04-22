@@ -1,15 +1,35 @@
-// Dynamic import with a build-time cache-buster so Python's http.server
-// (which happily serves 304 Not Modified to Chrome's module cache) can't
-// pin us to a stale wasm during iteration.
+// docseg browser demo.
+// The Rust side (wasm) owns preprocess, postprocess, reading order,
+// overlay painting, hit-test, PNG crop, and zip export. JS orchestrates:
+// fetch model → ort.InferenceSession on WebGPU → preprocess → inference →
+// extract region+affinity channels → postprocess → paint → wire UI.
+
 const BUILD_TAG = `${Date.now()}`;
 const pkgMod = await import(`./pkg/docseg_web.js?t=${BUILD_TAG}`);
 const { DocsegApp } = pkgMod;
 const init = pkgMod.default;
 
-const MODEL_URL = "./models/craft_mlt_25k.onnx";
+// The CRAFT ONNX lives at this URL. Swap to a HuggingFace resolve URL
+// (huggingface.co/<user>/<repo>/resolve/main/craft_mlt_25k.onnx) once the
+// model is hosted there — the demo and the GH Pages build will fetch from
+// the same place.
+const MODEL_URL =
+  (window.DOCSEG_MODEL_URL ?? "./models/craft_mlt_25k.onnx");
 
 const $ = (id) => document.getElementById(id);
 const status = (msg) => { $("status").textContent = msg; };
+
+// Mutable session state, held in the module closure.
+const state = {
+  app: null,
+  session: null,
+  lastImageBlob: null,
+  lastImage: null,
+  lastDetection: null,
+  mode: "auto", // "auto" | "draw"
+  drawSequence: [],
+  highlightId: -1,
+};
 
 async function main() {
   if (!("gpu" in navigator)) {
@@ -20,61 +40,122 @@ async function main() {
     status("");
     return;
   }
-
   if (typeof ort === "undefined") {
     throw new Error("onnxruntime-web failed to load from CDN");
   }
-  // Point onnxruntime-web at its wasm assets on the same CDN. Without this
-  // it tries to fetch `ort-wasm-*.wasm` from our origin, which 404s.
   ort.env.wasm.wasmPaths =
     "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
 
   status("loading wasm…");
   await init(`./pkg/docseg_web_bg.wasm?t=${BUILD_TAG}`);
-  const app = new DocsegApp();
+  state.app = new DocsegApp();
 
-  status("fetching model (~83 MB, cached after first load)…");
+  status("fetching model (~83 MB; cached after first load)…");
   const modelRes = await fetch(MODEL_URL);
   if (!modelRes.ok) throw new Error(`model fetch: ${modelRes.status}`);
   const modelBytes = new Uint8Array(await modelRes.arrayBuffer());
 
   status("initializing WebGPU inference session…");
-  const session = await ort.InferenceSession.create(modelBytes, {
+  state.session = await ort.InferenceSession.create(modelBytes, {
     executionProviders: ["webgpu"],
     graphOptimizationLevel: "all",
   });
 
+  wireUi();
   status("ready. open an image.");
 
-  $("file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    await runDetection(app, session, file);
-  });
-
-  $("export").addEventListener("click", () => {
-    const bytes = app.exportZip();
-    downloadBlob(new Blob([bytes], { type: "application/zip" }), "docseg.zip");
-  });
-
-  // Auto-load the sample image if present.
   try {
     const sample = await fetch("test_case1.png");
     if (sample.ok) {
       const blob = await sample.blob();
-      await runDetection(app, session, blob);
+      await runDetection(blob);
     }
-  } catch {
-    /* no sample — user can pick one */
-  }
+  } catch { /* no sample */ }
 }
 
-async function runDetection(app, session, blob) {
+function wireUi() {
+  $("file").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    await runDetection(f);
+  });
+  $("export").addEventListener("click", () => {
+    const bytes = state.app.exportZip();
+    downloadBlob(new Blob([bytes], { type: "application/zip" }), "docseg.zip");
+  });
+  $("mode-auto").addEventListener("click", () => setMode("auto"));
+  $("mode-draw").addEventListener("click", () => setMode("draw"));
+  $("mode-reset").addEventListener("click", () => {
+    state.drawSequence = [];
+    setMode("auto");
+    applyReadingOrder();
+  });
+  $("show-order").addEventListener("change", repaint);
+  $("direction").addEventListener("change", applyReadingOrder);
+
+  // Detection sliders: live-update postprocess (cheap, no re-inference).
+  for (const id of ["region-threshold", "affinity-threshold", "erosion-px", "min-area"]) {
+    const el = $(id);
+    const out = $(`${id}-out`);
+    el.addEventListener("input", () => {
+      out.textContent = el.type === "range" && Number(el.step) < 1
+        ? Number(el.value).toFixed(2)
+        : el.value;
+      recomputeFromCachedHeatmap();
+    });
+  }
+  $("axis-aligned").addEventListener("change", recomputeFromCachedHeatmap);
+
+  // Click handler: in "auto" mode downloads a crop; in "draw" mode appends
+  // the clicked box to the custom sequence.
+  $("canvas").addEventListener("click", (ev) => {
+    const canvas = ev.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const id = state.app.hit(x, y);
+    if (id < 0) return;
+    if (state.mode === "draw") {
+      if (!state.drawSequence.includes(id)) {
+        state.drawSequence.push(id);
+      }
+      state.app.setCustomOrder(new Uint32Array(state.drawSequence));
+      state.lastDetection.order = Array.from(
+        { length: state.drawSequence.length },
+        (_, i) => state.drawSequence[i],
+      );
+      renderRibbon();
+      repaint();
+      status(
+        `draw order: ${state.drawSequence.length}/${state.lastDetection.boxes.length} picked (click "Reset" to clear)`,
+      );
+    } else {
+      const png = state.app.cropPng(id);
+      downloadBlob(new Blob([png], { type: "image/png" }), `glyph_${id}.png`);
+    }
+  });
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  for (const id of ["mode-auto", "mode-draw"]) {
+    $(id).classList.toggle("mode-active", id === `mode-${mode}`);
+  }
+  $("canvas").style.cursor = mode === "draw" ? "crosshair" : "pointer";
+}
+
+let lastHeatmap = null; // { region: Float32Array, affinity: Float32Array, hmW, hmH, pre }
+
+async function runDetection(blob) {
+  state.lastImageBlob = blob;
+  state.drawSequence = [];
+  state.mode = "auto";
+  setMode("auto");
   status("decoding + preprocessing…");
   const imgBytes = new Uint8Array(await blob.arrayBuffer());
 
   const t0 = performance.now();
-  const pre = app.preprocessImage(imgBytes);
+  const pre = state.app.preprocessImage(imgBytes);
   const tPre = performance.now();
 
   status("running inference on WebGPU…");
@@ -83,16 +164,12 @@ async function runDetection(app, session, blob) {
     pre.tensor,
     [1, 3, pre.padded_h, pre.padded_w],
   );
-  const inputName = session.inputNames[0];
-  const outputName = session.outputNames[0];
-  const outputs = await session.run({ [inputName]: input });
+  const inputName = state.session.inputNames[0];
+  const outputName = state.session.outputNames[0];
+  const outputs = await state.session.run({ [inputName]: input });
   const tInfer = performance.now();
 
   const out = outputs[outputName];
-  // CRAFT output is [1, H/2, W/2, 2] — channel 0 is region (character body),
-  // channel 1 is affinity (inter-character space). For vertically-stacked
-  // glyphs we need BOTH: the Rust postprocess masks out pixels where
-  // affinity is high so touching characters in a column split cleanly.
   const { dims, data } = out;
   if (dims.length !== 4 || dims[3] !== 2) {
     throw new Error(`unexpected ort output shape ${JSON.stringify(dims)}`);
@@ -106,46 +183,116 @@ async function runDetection(app, session, blob) {
     region[i] = data[i * 2];
     affinity[i] = data[i * 2 + 1];
   }
+  lastHeatmap = { region, affinity, hmW, hmH, pre };
 
-  status("postprocessing…");
-  const detection = app.postprocess(
-    region,
-    affinity,
-    hmW,
-    hmH,
-    pre.scale,
-    pre.padded_w,
-    pre.padded_h,
-    pre.original_w,
-    pre.original_h,
-  );
-  const tPost = performance.now();
-
-  status("rendering…");
   const htmlImg = await blobToHtmlImage(blob);
-  const canvas = $("canvas");
-  canvas.width = detection.image.width;
-  canvas.height = detection.image.height;
-  const ctx = canvas.getContext("2d");
-  app.paint(ctx, htmlImg);
+  state.lastImage = htmlImg;
 
-  canvas.onclick = (ev) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const id = app.hit(x, y);
-    if (id < 0) return;
-    const png = app.cropPng(id);
-    downloadBlob(new Blob([png], { type: "image/png" }), `glyph_${id}.png`);
-  };
-
-  $("export").disabled = false;
+  runPostprocess();
   status(
-    `detected ${detection.boxes.length} characters | ` +
+    `detected ${state.lastDetection.boxes.length} characters | ` +
     `preprocess ${(tPre - t0).toFixed(0)}ms, ` +
-    `inference ${(tInfer - tPre).toFixed(0)}ms, ` +
-    `postprocess ${(tPost - tInfer).toFixed(0)}ms`,
+    `inference ${(tInfer - tPre).toFixed(0)}ms`,
   );
+  $("export").disabled = false;
+}
+
+function recomputeFromCachedHeatmap() {
+  if (!lastHeatmap || !state.lastImage) return;
+  runPostprocess();
+}
+
+function runPostprocess() {
+  const opts = readOptsFromUi();
+  const t0 = performance.now();
+  const { region, affinity, hmW, hmH, pre } = lastHeatmap;
+  state.lastDetection = state.app.postprocess(
+    region, affinity, hmW, hmH,
+    pre.scale, pre.padded_w, pre.padded_h, pre.original_w, pre.original_h,
+    opts.regionThreshold,
+    opts.affinityThreshold,
+    opts.erosionPx,
+    opts.axisAligned,
+    opts.minArea,
+    $("direction").value,
+  );
+  const t1 = performance.now();
+  state.drawSequence = [];
+  // Resize canvas to image bounds, then repaint and refresh ribbon.
+  const canvas = $("canvas");
+  canvas.width = state.lastDetection.image.width;
+  canvas.height = state.lastDetection.image.height;
+  renderRibbon();
+  repaint();
+  status(
+    `detected ${state.lastDetection.boxes.length} characters | postprocess ${(t1 - t0).toFixed(0)}ms`,
+  );
+}
+
+function applyReadingOrder() {
+  if (!state.lastDetection) return;
+  if (state.mode === "draw" && state.drawSequence.length > 0) {
+    state.app.setCustomOrder(new Uint32Array(state.drawSequence));
+    state.lastDetection.order = [...state.drawSequence];
+  } else {
+    const order = state.app.computeReadingOrder($("direction").value);
+    state.lastDetection.order = Array.from(order);
+  }
+  renderRibbon();
+  repaint();
+}
+
+function readOptsFromUi() {
+  return {
+    regionThreshold: Number($("region-threshold").value),
+    affinityThreshold: Number($("affinity-threshold").value),
+    erosionPx: Number($("erosion-px").value),
+    minArea: Number($("min-area").value),
+    axisAligned: $("axis-aligned").checked,
+  };
+}
+
+function repaint() {
+  if (!state.lastImage) return;
+  const canvas = $("canvas");
+  const ctx = canvas.getContext("2d");
+  state.app.paint(
+    ctx,
+    state.lastImage,
+    $("show-order").checked,
+    state.highlightId,
+  );
+}
+
+function renderRibbon() {
+  const ribbon = $("ribbon");
+  ribbon.innerHTML = "";
+  if (!state.lastDetection) return;
+  const order = state.lastDetection.order ?? [];
+  const frag = document.createDocumentFragment();
+  for (let rank = 0; rank < order.length; rank++) {
+    const id = order[rank];
+    const png = state.app.cropPng(id);
+    const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+    const cell = document.createElement("div");
+    cell.className = "ribbon-cell";
+    cell.dataset.id = String(id);
+    cell.innerHTML =
+      `<img src="${url}" alt="glyph ${id}" />` +
+      `<span class="rank">${rank + 1}</span>`;
+    cell.addEventListener("mouseenter", () => {
+      state.highlightId = id;
+      cell.classList.add("hover");
+      repaint();
+    });
+    cell.addEventListener("mouseleave", () => {
+      state.highlightId = -1;
+      cell.classList.remove("hover");
+      repaint();
+    });
+    frag.appendChild(cell);
+  }
+  ribbon.appendChild(frag);
 }
 
 function blobToHtmlImage(blob) {
