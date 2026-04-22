@@ -34,6 +34,14 @@ const state = {
   highlightId: -1,
 };
 
+const sessionDefaults = {
+  regionThreshold: null,
+  affinityThreshold: null,
+  erosionPx: null,
+  minArea: null,
+  axisAligned: null,
+};
+
 const batch = {
   pages: [],         // { blob, thumbnailUrl, status, persisted }
   currentIndex: -1,
@@ -152,10 +160,16 @@ function wireUi() {
       out.textContent = el.type === "range" && Number(el.step) < 1
         ? Number(el.value).toFixed(2)
         : el.value;
+      const key = idToDefaultKey(id);
+      if (key) sessionDefaults[key] = Number(el.value);
+      updateInheritedTicks();
       recomputeFromCachedHeatmap();
     });
   }
-  $("axis-aligned").addEventListener("change", recomputeFromCachedHeatmap);
+  $("axis-aligned").addEventListener("change", () => {
+    sessionDefaults.axisAligned = $("axis-aligned").checked;
+    recomputeFromCachedHeatmap();
+  });
 }
 
 let lastHeatmap = null; // { region: Float32Array, affinity: Float32Array, hmW, hmH, pre }
@@ -264,6 +278,69 @@ function readOptsFromUi() {
   };
 }
 
+function idToDefaultKey(id) {
+  return {
+    "region-threshold": "regionThreshold",
+    "affinity-threshold": "affinityThreshold",
+    "erosion-px": "erosionPx",
+    "min-area": "minArea",
+  }[id] ?? null;
+}
+
+function updateInheritedTicks() {
+  const pairs = [
+    ["regionThreshold", "region-threshold"],
+    ["affinityThreshold", "affinity-threshold"],
+    ["erosionPx", "erosion-px"],
+    ["minArea", "min-area"],
+  ];
+  for (const [key, id] of pairs) {
+    const el = $(id);
+    const tick = $(`${id}-tick`);
+    if (!el || !tick) continue;
+    const def = sessionDefaults[key];
+    if (def == null) {
+      tick.style.display = "none";
+      continue;
+    }
+    const min = Number(el.min);
+    const max = Number(el.max);
+    if (!(max > min)) {
+      tick.style.display = "none";
+      continue;
+    }
+    const frac = (def - min) / (max - min);
+    tick.style.display = "block";
+    tick.style.left = `${Math.max(0, Math.min(1, frac)) * 100}%`;
+    tick.title = "inherited from last page";
+  }
+}
+
+function applySessionDefaults() {
+  const pairs = [
+    ["regionThreshold", "region-threshold"],
+    ["affinityThreshold", "affinity-threshold"],
+    ["erosionPx", "erosion-px"],
+    ["minArea", "min-area"],
+  ];
+  for (const [key, id] of pairs) {
+    const def = sessionDefaults[key];
+    if (def == null) continue;
+    const el = $(id);
+    el.value = String(def);
+    const out = $(`${id}-out`);
+    if (out) {
+      out.textContent = el.type === "range" && Number(el.step) < 1
+        ? Number(def).toFixed(2)
+        : String(def);
+    }
+  }
+  if (sessionDefaults.axisAligned != null) {
+    $("axis-aligned").checked = sessionDefaults.axisAligned;
+  }
+  updateInheritedTicks();
+}
+
 function repaint() {
   if (!state.lastImage) return;
   const canvas = $("canvas");
@@ -348,6 +425,7 @@ async function loadBatchPage(i) {
   filmstrip.setCurrent(i);
   const page = batch.pages[i];
   state.app.resetForBatch();
+  applySessionDefaults();
   await runDetection(page.blob);
   if (page.persisted) rehydrate(page.persisted);
   if (page.status === "untouched") {

@@ -145,3 +145,12 @@ button.mode-btn.mode-active {
 .chip-in-progress { background: #4af; }
 .chip-reviewed { background: #4b6; }
 .chip-flagged { background: #e73; }
+.slider-wrap { position: relative; display: inline-block; }
+.inherited-tick {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 20px;
+  background: rgb(80, 220, 255);
+  pointer-events: none;
+}
