@@ -2,4 +2,5 @@
 /web/pkg
 /models/*.onnx
 /models/*.bin
+/models/verification_overlay.png
 .DS_Store
