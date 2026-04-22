@@ -6,8 +6,10 @@
 
 pub mod error;
 pub mod geometry;
+pub mod postprocess;
 pub mod preprocess;
 
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
+pub use postprocess::{components_from_heatmap, PostprocessOptions};
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
