@@ -292,10 +292,78 @@ impl DocsegApp {
         )
         .map_err(|e| JsError::new(&format!("{e:#}")))
     }
+
+    /// Add a user-drawn axis-aligned box in original-image coordinates.
+    /// Returns the new box's 0-based index. Sets `manual = true`.
+    /// Zero-area rectangles are rejected.
+    #[wasm_bindgen(js_name = addBoxManual)]
+    pub fn add_box_manual(
+        &self,
+        xmin: f32,
+        ymin: f32,
+        xmax: f32,
+        ymax: f32,
+    ) -> Result<u32, JsError> {
+        let quad =
+            rect_quad(xmin, ymin, xmax, ymax).ok_or_else(|| JsError::new("zero-area box"))?;
+        let cb = docseg_core::postprocess::CharBox {
+            quad,
+            score: 1.0,
+            manual: true,
+        };
+        let mut boxes = self.last_boxes.borrow_mut();
+        let id = boxes.len() as u32;
+        boxes.push(cb);
+        Ok(id)
+    }
+
+    /// Replace the quad of an existing box with a new axis-aligned rect.
+    /// Sets `manual = true`. No-op (returns Ok) when `id` is out of range.
+    #[wasm_bindgen(js_name = updateBox)]
+    pub fn update_box(
+        &self,
+        id: u32,
+        xmin: f32,
+        ymin: f32,
+        xmax: f32,
+        ymax: f32,
+    ) -> Result<(), JsError> {
+        let quad =
+            rect_quad(xmin, ymin, xmax, ymax).ok_or_else(|| JsError::new("zero-area box"))?;
+        let mut boxes = self.last_boxes.borrow_mut();
+        if let Some(b) = boxes.get_mut(id as usize) {
+            b.quad = quad;
+            b.manual = true;
+        }
+        Ok(())
+    }
+
+    /// Remove a box by id. No-op when out of range.
+    #[wasm_bindgen(js_name = removeBox)]
+    pub fn remove_box(&self, id: u32) -> Result<(), JsError> {
+        let mut boxes = self.last_boxes.borrow_mut();
+        if (id as usize) < boxes.len() {
+            boxes.remove(id as usize);
+        }
+        Ok(())
+    }
 }
 
 impl Default for DocsegApp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn rect_quad(xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> Option<docseg_core::geometry::Quad> {
+    use docseg_core::geometry::{Point, Quad};
+    if xmax <= xmin || ymax <= ymin {
+        return None;
+    }
+    Some(Quad::new([
+        Point::new(xmin, ymin),
+        Point::new(xmax, ymin),
+        Point::new(xmax, ymax),
+        Point::new(xmin, ymax),
+    ]))
 }
