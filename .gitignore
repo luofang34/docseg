@@ -4,3 +4,5 @@
 /models/*.bin
 /models/verification_overlay.png
 .DS_Store
+/web/test_case1.png
+/web/models/

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>docseg — character segmentation demo</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- onnxruntime-web: WebGPU EP + wasm fallback. Pinned to a known-good version. -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.webgpu.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>docseg</h1>
+    <label class="file">
+      Open image
+      <input id="file" type="file" accept="image/png,image/jpeg" />
+    </label>
+    <button id="export" disabled>Export all (zip)</button>
+    <span id="status">initializing…</span>
+  </header>
+  <div id="banner" hidden></div>
+  <main>
+    <div id="canvas-wrap">
+      <canvas id="canvas" width="0" height="0"></canvas>
+    </div>
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
