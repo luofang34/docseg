@@ -14,6 +14,7 @@ pub mod geometry;
 pub mod model;
 
 pub mod postprocess;
+pub mod postprocess_merge;
 pub mod preprocess;
 pub mod reading_order;
 
@@ -24,5 +25,6 @@ pub use model::{CraftSession, RegionMap};
 pub use postprocess::{
     charboxes_from_heatmap, components_from_heatmap, CharBox, PostprocessOptions,
 };
+pub use postprocess_merge::{iou_aabb, merge_manual_with_auto};
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
 pub use reading_order::{compute_reading_order, ReadingDirection};
