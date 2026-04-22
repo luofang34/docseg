@@ -20,6 +20,7 @@ struct BoxOut {
     id: u32,
     quad: [[f32; 2]; 4],
     score: f32,
+    manual: bool,
 }
 
 /// Result of a full detection run.
@@ -170,11 +171,23 @@ impl DocsegApp {
             axis_aligned,
             ..PostprocessOptions::default()
         };
-        let boxes =
-            charboxes_from_heatmap(&region_data, affinity, heatmap_w, heatmap_h, &pre, opts);
+        let auto = charboxes_from_heatmap(&region_data, affinity, heatmap_w, heatmap_h, &pre, opts);
+
+        // Preserve any manual boxes already on `self.last_boxes` through
+        // the IoU-merge rule.
+        let existing = self.last_boxes.borrow().clone();
+        let manual: Vec<_> = existing.into_iter().filter(|b| b.manual).collect();
+        let merged = docseg_core::postprocess_merge::merge_manual_with_auto(&auto, &manual);
+
+        // Region-aware reading order.
         let direction = parse_direction(reading_direction);
-        let order = compute_reading_order(&boxes, direction);
-        *self.last_boxes.borrow_mut() = boxes.clone();
+        let order = docseg_core::reading_order::compute_reading_order_with_regions(
+            &merged,
+            &self.last_regions.borrow(),
+            direction,
+        );
+
+        *self.last_boxes.borrow_mut() = merged.clone();
         *self.last_order.borrow_mut() = order.clone();
 
         let out = DetectionOut {
@@ -183,7 +196,7 @@ impl DocsegApp {
                 height: original_h,
             },
             model: "craft_mlt_25k",
-            boxes: boxes
+            boxes: merged
                 .iter()
                 .enumerate()
                 .map(|(i, b)| BoxOut {
@@ -195,6 +208,7 @@ impl DocsegApp {
                         [b.quad.points[3].x, b.quad.points[3].y],
                     ],
                     score: b.score,
+                    manual: b.manual,
                 })
                 .collect(),
             order: order.iter().map(|&i| i as u32).collect(),
