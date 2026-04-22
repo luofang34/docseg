@@ -165,6 +165,19 @@ impl DocsegApp {
     pub fn hit(&self, x: f32, y: f32) -> i32 {
         hit_test(&self.last_boxes.borrow(), x, y).map_or(-1, |i| i as i32)
     }
+
+    /// Return a PNG of the axis-aligned crop of box `id` from the last
+    /// image passed to `preprocessImage`. Errors if that image hasn't been
+    /// stored, or if the id is out of range.
+    #[wasm_bindgen(js_name = cropPng)]
+    pub fn crop_png(&self, id: u32) -> Result<Vec<u8>, JsError> {
+        crate::export::crop_png(
+            &self.last_image_bytes.borrow(),
+            &self.last_boxes.borrow(),
+            id as usize,
+        )
+        .map_err(|e| JsError::new(&format!("{e:#}")))
+    }
 }
 
 impl Default for DocsegApp {
