@@ -8,8 +8,10 @@ use docseg_core::postprocess::{charboxes_from_heatmap, CharBox, PostprocessOptio
 use docseg_core::preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+use web_sys::{CanvasRenderingContext2d, HtmlImageElement};
 
 use crate::canvas::decode;
+use crate::render::{hit_test, paint};
 
 /// One detected glyph as it crosses the JS boundary.
 #[derive(Serialize)]
@@ -144,6 +146,24 @@ impl DocsegApp {
                 .collect(),
         };
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&format!("{e}")))
+    }
+
+    /// Paint the source image + per-character overlay onto a canvas
+    /// context, using the boxes from the most recent `postprocess` call.
+    pub fn paint(
+        &self,
+        ctx: &CanvasRenderingContext2d,
+        img: &HtmlImageElement,
+    ) -> Result<(), JsError> {
+        paint(ctx, img, &self.last_boxes.borrow())
+            .map_err(|e| JsError::new(&format!("paint failed: {e:?}")))
+    }
+
+    /// Hit-test the last postprocess result. Returns the 0-based id of the
+    /// first box whose axis-aligned bounding rect contains `(x, y)`, or
+    /// `-1` if nothing matches.
+    pub fn hit(&self, x: f32, y: f32) -> i32 {
+        hit_test(&self.last_boxes.borrow(), x, y).map_or(-1, |i| i as i32)
     }
 }
 
