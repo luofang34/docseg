@@ -83,6 +83,8 @@ pub struct DocsegApp {
     last_direction: std::cell::Cell<ReadingDirection>,
     /// Currently-selected box index; `-1` means no selection.
     last_selected: std::cell::Cell<i32>,
+    /// Per-page undo / redo log.
+    edit_log: RefCell<docseg_core::edit_log::EditLog>,
 }
 
 #[wasm_bindgen]
@@ -100,6 +102,7 @@ impl DocsegApp {
             next_region_id: std::cell::Cell::new(1),
             last_direction: std::cell::Cell::new(ReadingDirection::VerticalRtl),
             last_selected: std::cell::Cell::new(-1),
+            edit_log: RefCell::new(docseg_core::edit_log::EditLog::new()),
         }
     }
 
@@ -361,6 +364,9 @@ impl DocsegApp {
         };
         let mut boxes = self.last_boxes.borrow_mut();
         let id = boxes.len() as u32;
+        self.edit_log
+            .borrow_mut()
+            .push(docseg_core::edit_log::EditEvent::AddBox(cb.clone()));
         boxes.push(cb);
         Ok(id)
     }
@@ -379,9 +385,20 @@ impl DocsegApp {
         let quad =
             rect_quad(xmin, ymin, xmax, ymax).ok_or_else(|| JsError::new("zero-area box"))?;
         let mut boxes = self.last_boxes.borrow_mut();
-        if let Some(b) = boxes.get_mut(id as usize) {
-            b.quad = quad;
-            b.manual = true;
+        if let Some(before) = boxes.get(id as usize).cloned() {
+            let mut after = before.clone();
+            after.quad = quad;
+            after.manual = true;
+            self.edit_log
+                .borrow_mut()
+                .push(docseg_core::edit_log::EditEvent::UpdateBox {
+                    index: id,
+                    before,
+                    after: after.clone(),
+                });
+            if let Some(b) = boxes.get_mut(id as usize) {
+                *b = after;
+            }
         }
         Ok(())
     }
@@ -391,6 +408,10 @@ impl DocsegApp {
     pub fn remove_box(&self, id: u32) -> Result<(), JsError> {
         let mut boxes = self.last_boxes.borrow_mut();
         if (id as usize) < boxes.len() {
+            let value = boxes[id as usize].clone();
+            self.edit_log
+                .borrow_mut()
+                .push(docseg_core::edit_log::EditEvent::RemoveBox { index: id, value });
             boxes.remove(id as usize);
         }
         Ok(())
@@ -426,6 +447,9 @@ impl DocsegApp {
             role,
             rank,
         };
+        self.edit_log
+            .borrow_mut()
+            .push(docseg_core::edit_log::EditEvent::AddRegion(region.clone()));
         self.last_regions.borrow_mut().push(region);
         Ok(id)
     }
@@ -451,15 +475,26 @@ impl DocsegApp {
         }
         let role = parse_role(role).ok_or_else(|| JsError::new("unknown role"))?;
         let mut regions = self.last_regions.borrow_mut();
-        if let Some(r) = regions.iter_mut().find(|r| r.id == id) {
-            r.shape = RegionShape::Rect {
+        let idx = regions.iter().position(|r| r.id == id);
+        if let Some(idx) = idx {
+            let before = regions[idx].clone();
+            let mut after = before.clone();
+            after.shape = RegionShape::Rect {
                 xmin,
                 ymin,
                 xmax,
                 ymax,
             };
-            r.role = role;
-            r.rank = rank;
+            after.role = role;
+            after.rank = rank;
+            self.edit_log
+                .borrow_mut()
+                .push(docseg_core::edit_log::EditEvent::UpdateRegion {
+                    index: idx as u32,
+                    before,
+                    after: after.clone(),
+                });
+            regions[idx] = after;
         }
         Ok(())
     }
@@ -467,8 +502,40 @@ impl DocsegApp {
     /// Remove a region by id. No-op when id is unknown.
     #[wasm_bindgen(js_name = removeRegion)]
     pub fn remove_region(&self, id: u32) -> Result<(), JsError> {
-        self.last_regions.borrow_mut().retain(|r| r.id != id);
+        let mut regions = self.last_regions.borrow_mut();
+        if let Some(idx) = regions.iter().position(|r| r.id == id) {
+            let value = regions[idx].clone();
+            self.edit_log
+                .borrow_mut()
+                .push(docseg_core::edit_log::EditEvent::RemoveRegion {
+                    index: idx as u32,
+                    value,
+                });
+            regions.remove(idx);
+        }
         Ok(())
+    }
+
+    /// Undo the most recent edit on the current page. Returns `true` if
+    /// something was undone.
+    pub fn undo(&self) -> bool {
+        let event = match self.edit_log.borrow_mut().undo() {
+            Some(e) => e,
+            None => return false,
+        };
+        self.apply_event_reverse(&event);
+        true
+    }
+
+    /// Re-apply the most recently undone edit. Returns `true` if
+    /// something was redone.
+    pub fn redo(&self) -> bool {
+        let event = match self.edit_log.borrow_mut().redo() {
+            Some(e) => e,
+            None => return false,
+        };
+        self.apply_event_forward(&event);
+        true
     }
 
     /// Serialize every region as JSON — an array of
@@ -528,6 +595,89 @@ impl DocsegApp {
 impl Default for DocsegApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DocsegApp {
+    fn apply_event_reverse(&self, event: &docseg_core::edit_log::EditEvent) {
+        use docseg_core::edit_log::EditEvent::*;
+        match event {
+            AddBox(_) => {
+                // Reverse an add = drop the last box.
+                self.last_boxes.borrow_mut().pop();
+            }
+            RemoveBox { index, value } => {
+                let idx = *index as usize;
+                let mut boxes = self.last_boxes.borrow_mut();
+                if idx <= boxes.len() {
+                    boxes.insert(idx, value.clone());
+                } else {
+                    boxes.push(value.clone());
+                }
+            }
+            UpdateBox { index, before, .. } => {
+                if let Some(b) = self.last_boxes.borrow_mut().get_mut(*index as usize) {
+                    *b = before.clone();
+                }
+            }
+            AddRegion(_) => {
+                self.last_regions.borrow_mut().pop();
+            }
+            RemoveRegion { index, value } => {
+                let idx = *index as usize;
+                let mut regs = self.last_regions.borrow_mut();
+                if idx <= regs.len() {
+                    regs.insert(idx, value.clone());
+                } else {
+                    regs.push(value.clone());
+                }
+            }
+            UpdateRegion { index, before, .. } => {
+                if let Some(r) = self.last_regions.borrow_mut().get_mut(*index as usize) {
+                    *r = before.clone();
+                }
+            }
+            ReorderBoxes { before, .. } => {
+                *self.last_order.borrow_mut() = before.iter().map(|&u| u as usize).collect();
+            }
+        }
+    }
+
+    fn apply_event_forward(&self, event: &docseg_core::edit_log::EditEvent) {
+        use docseg_core::edit_log::EditEvent::*;
+        match event {
+            AddBox(b) => {
+                self.last_boxes.borrow_mut().push(b.clone());
+            }
+            RemoveBox { index, .. } => {
+                let mut boxes = self.last_boxes.borrow_mut();
+                if (*index as usize) < boxes.len() {
+                    boxes.remove(*index as usize);
+                }
+            }
+            UpdateBox { index, after, .. } => {
+                if let Some(b) = self.last_boxes.borrow_mut().get_mut(*index as usize) {
+                    *b = after.clone();
+                }
+            }
+            AddRegion(r) => {
+                self.last_regions.borrow_mut().push(r.clone());
+            }
+            RemoveRegion { index, .. } => {
+                let mut regs = self.last_regions.borrow_mut();
+                if (*index as usize) < regs.len() {
+                    regs.remove(*index as usize);
+                }
+            }
+            UpdateRegion { index, after, .. } => {
+                if let Some(r) = self.last_regions.borrow_mut().get_mut(*index as usize) {
+                    *r = after.clone();
+                }
+            }
+            ReorderBoxes { after, .. } => {
+                *self.last_order.borrow_mut() = after.iter().map(|&u| u as usize).collect();
+            }
+        }
     }
 }
 
