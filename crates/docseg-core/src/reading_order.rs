@@ -170,5 +170,56 @@ fn median_positive(vals: &[f32]) -> f32 {
     positive[positive.len() / 2]
 }
 
+use crate::regions::{region_for_box, Region};
+
+/// Compute reading order taking layout regions into account. Boxes are
+/// grouped by region (boxes outside every region fall into an implicit
+/// "Body" group at rank 2). Groups are ordered by region rank; within
+/// each group the existing direction-dependent column/line clustering
+/// is applied.
+#[must_use]
+pub fn compute_reading_order_with_regions(
+    boxes: &[CharBox],
+    regions: &[Region],
+    direction: ReadingDirection,
+) -> Vec<usize> {
+    if boxes.is_empty() {
+        return Vec::new();
+    }
+    if regions.is_empty() {
+        return compute_reading_order(boxes, direction);
+    }
+
+    // Group indices by (rank, region_id). Implicit Body uses rank 2 and
+    // a sentinel region id of u32::MAX so it sorts after same-rank drawn
+    // regions — acceptable ambiguity for v1.
+    let mut grouped: std::collections::BTreeMap<(u32, u32), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (i, b) in boxes.iter().enumerate() {
+        let key = match region_for_box(b, regions) {
+            Some(rid) => {
+                let rank = regions
+                    .iter()
+                    .find(|r| r.id == rid)
+                    .map(|r| r.rank)
+                    .unwrap_or(2);
+                (rank, rid)
+            }
+            None => (2, u32::MAX),
+        };
+        grouped.entry(key).or_default().push(i);
+    }
+
+    let mut out = Vec::with_capacity(boxes.len());
+    for ((_rank, _rid), idxs) in grouped {
+        let subset: Vec<CharBox> = idxs.iter().map(|&i| boxes[i].clone()).collect();
+        let sub_order = compute_reading_order(&subset, direction);
+        for rank_in_sub in sub_order {
+            out.push(idxs[rank_in_sub]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;

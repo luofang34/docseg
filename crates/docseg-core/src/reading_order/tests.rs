@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-use super::{compute_reading_order, ReadingDirection};
+use super::{compute_reading_order, compute_reading_order_with_regions, ReadingDirection};
 use crate::geometry::{Point, Quad};
 use crate::postprocess::CharBox;
 
@@ -99,4 +99,65 @@ fn order_is_a_permutation() {
     sorted.sort_unstable();
     let expected: Vec<usize> = (0..boxes.len()).collect();
     assert_eq!(sorted, expected);
+}
+
+use crate::regions::{Region, RegionRole, RegionShape};
+
+#[test]
+fn regions_order_by_rank_then_within_each() {
+    // Layout: header rect covers top 50px, body is the rest.
+    let boxes = vec![
+        rect(10.0, 100.0, 20.0, 20.0), // 0: body, top
+        rect(10.0, 200.0, 20.0, 20.0), // 1: body, bot
+        rect(10.0, 10.0, 20.0, 20.0),  // 2: header
+        rect(40.0, 10.0, 20.0, 20.0),  // 3: header (different col, same row)
+    ];
+    let regions = vec![Region {
+        id: 1,
+        shape: RegionShape::Rect {
+            xmin: 0.0,
+            ymin: 0.0,
+            xmax: 100.0,
+            ymax: 50.0,
+        },
+        role: RegionRole::Header,
+        rank: 1,
+    }];
+    let order = compute_reading_order_with_regions(&boxes, &regions, ReadingDirection::VerticalRtl);
+    // Header first (rank 1): right col header reads first under RTL.
+    // Within header: col at x=40 before col at x=10.
+    // Body last: col at x=10 only, top-to-bottom.
+    assert_eq!(order, vec![3, 2, 0, 1]);
+}
+
+#[test]
+fn box_outside_every_region_falls_into_implicit_body_rank_2() {
+    // No regions drawn; behavior should match the non-region call.
+    let boxes = vec![rect(10.0, 10.0, 20.0, 20.0), rect(10.0, 60.0, 20.0, 20.0)];
+    let without = compute_reading_order(&boxes, ReadingDirection::VerticalRtl);
+    let with = compute_reading_order_with_regions(&boxes, &[], ReadingDirection::VerticalRtl);
+    assert_eq!(without, with);
+}
+
+#[test]
+fn box_outside_drawn_region_is_treated_as_implicit_body() {
+    // Header drawn over top-left only; the rest are implicit body (rank 2).
+    // Body box should come AFTER the header box.
+    let boxes = vec![
+        rect(200.0, 200.0, 20.0, 20.0), // 0: body (outside header)
+        rect(10.0, 10.0, 20.0, 20.0),   // 1: header
+    ];
+    let regions = vec![Region {
+        id: 1,
+        shape: RegionShape::Rect {
+            xmin: 0.0,
+            ymin: 0.0,
+            xmax: 50.0,
+            ymax: 50.0,
+        },
+        role: RegionRole::Header,
+        rank: 1,
+    }];
+    let order = compute_reading_order_with_regions(&boxes, &regions, ReadingDirection::VerticalRtl);
+    assert_eq!(order, vec![1, 0]);
 }

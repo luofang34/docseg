@@ -28,5 +28,7 @@ pub use postprocess::{
 };
 pub use postprocess_merge::{iou_aabb, merge_manual_with_auto};
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
-pub use reading_order::{compute_reading_order, ReadingDirection};
+pub use reading_order::{
+    compute_reading_order, compute_reading_order_with_regions, ReadingDirection,
+};
 pub use regions::{region_for_box, Region, RegionRole, RegionShape};
