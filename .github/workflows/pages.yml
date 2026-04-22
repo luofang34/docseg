@@ -39,25 +39,25 @@ jobs:
       - name: Build wasm (release)
         run: wasm-pack build crates/docseg-web --target web --release --out-dir ../../web/pkg
 
-      # Pages will fetch the CRAFT ONNX at runtime from the URL injected via
-      # the DOCSEG_MODEL_URL repository variable — see main.js. If unset, the
-      # demo falls back to ./models/craft_mlt_25k.onnx (convenient for local
-      # dev, 404s on Pages — that's expected until you set the variable).
-      - name: Inject model URL
-        if: vars.DOCSEG_MODEL_URL != ''
-        run: |
-          cat >> web/index.html <<EOF
-          <script>window.DOCSEG_MODEL_URL = "${{ vars.DOCSEG_MODEL_URL }}";</script>
-          EOF
-
       - name: Prepare deploy artifact
         run: |
-          # Strip anything we don't want on Pages — the local model file,
-          # verification overlay, etc. web/pkg/ stays; the wasm is the
-          # whole point.
           mkdir -p deploy
           cp -R web/* deploy/
+          # Leave deploy/models/ empty; the model is downloaded in the next
+          # step so it ships same-origin (GH Release asset URLs don't serve
+          # Access-Control-Allow-Origin, which breaks browser fetch()).
           rm -rf deploy/models
+          mkdir -p deploy/models
+
+      # Download the CRAFT ONNX from the Release pinned in the repo variable
+      # and embed it in the deploy artifact so the browser fetches it from
+      # the same origin (Pages). Avoids the CORS preflight failure on
+      # release-assets.githubusercontent.com.
+      - name: Bundle CRAFT ONNX into deploy artifact
+        if: vars.DOCSEG_MODEL_URL != ''
+        run: |
+          curl -fL --retry 3 -o deploy/models/craft_mlt_25k.onnx "${{ vars.DOCSEG_MODEL_URL }}"
+          ls -la deploy/models/craft_mlt_25k.onnx
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3
