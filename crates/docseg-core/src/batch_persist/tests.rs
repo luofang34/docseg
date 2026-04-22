@@ -65,3 +65,55 @@ fn from_zip_rejects_too_new_schema_version() {
         "got {msg}"
     );
 }
+
+use crate::edit_log::{EditEvent, EditLog};
+use crate::geometry::{Point, Quad};
+use crate::postprocess::CharBox;
+use crate::regions::{Region, RegionRole, RegionShape};
+
+#[test]
+fn multi_page_batch_with_edits_and_regions_round_trips() {
+    let mut b = Batch::new();
+    for i in 0..3 {
+        let mut p = Page::new(format!("img-bytes-{i}").as_bytes());
+        p.status = PageStatus::InProgress;
+        p.boxes.push(CharBox {
+            quad: Quad::new([
+                Point::new(1.0, 1.0),
+                Point::new(11.0, 1.0),
+                Point::new(11.0, 11.0),
+                Point::new(1.0, 11.0),
+            ]),
+            score: 0.9,
+            manual: (i == 1),
+        });
+        p.regions.push(Region {
+            id: 1,
+            shape: RegionShape::Rect {
+                xmin: 0.0,
+                ymin: 0.0,
+                xmax: 50.0,
+                ymax: 50.0,
+            },
+            role: RegionRole::Header,
+            rank: 1,
+        });
+        let mut log = EditLog::new();
+        log.push(EditEvent::AddBox(p.boxes[0].clone()));
+        p.edit_log = log;
+        b.pages.push(p);
+    }
+
+    let bytes = to_zip(&b).expect("to_zip");
+    let restored = from_zip(&bytes).expect("from_zip");
+    assert_eq!(restored.pages.len(), 3);
+    for (i, (o, n)) in b.pages.iter().zip(restored.pages.iter()).enumerate() {
+        assert_eq!(o.id, n.id, "page {i} id");
+        assert_eq!(o.status, n.status, "page {i} status");
+        assert_eq!(o.boxes.len(), n.boxes.len(), "page {i} box count");
+        assert_eq!(o.boxes[0].manual, n.boxes[0].manual, "page {i} manual");
+        assert_eq!(o.regions.len(), n.regions.len(), "page {i} region count");
+        assert_eq!(o.image_sha256, n.image_sha256, "page {i} sha");
+        assert_eq!(o.image_bytes, n.image_bytes, "page {i} image bytes");
+    }
+}
