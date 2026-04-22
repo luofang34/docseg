@@ -78,6 +78,9 @@ pub struct DocsegApp {
     last_regions: RefCell<Vec<docseg_core::regions::Region>>,
     /// Monotonically increasing counter used to assign stable region ids.
     next_region_id: std::cell::Cell<u32>,
+    /// Most recent reading direction, used by `paint` to derive the
+    /// orthogonal-axis flag for the arrow classifier.
+    last_direction: std::cell::Cell<ReadingDirection>,
 }
 
 #[wasm_bindgen]
@@ -93,6 +96,7 @@ impl DocsegApp {
             last_order: RefCell::new(Vec::new()),
             last_regions: RefCell::new(Vec::new()),
             next_region_id: std::cell::Cell::new(1),
+            last_direction: std::cell::Cell::new(ReadingDirection::VerticalRtl),
         }
     }
 
@@ -181,6 +185,7 @@ impl DocsegApp {
 
         // Region-aware reading order.
         let direction = parse_direction(reading_direction);
+        self.last_direction.set(direction);
         let order = docseg_core::reading_order::compute_reading_order_with_regions(
             &merged,
             &self.last_regions.borrow(),
@@ -269,11 +274,17 @@ impl DocsegApp {
         } else {
             None
         };
+        let direction_ortho_x = matches!(
+            self.last_direction.get(),
+            ReadingDirection::VerticalRtl | ReadingDirection::VerticalLtr
+        );
         paint_with_order(
             ctx,
             img,
             &self.last_boxes.borrow(),
             &self.last_order.borrow(),
+            &self.last_regions.borrow(),
+            direction_ortho_x,
             show_order,
             highlight,
         )
