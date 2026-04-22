@@ -5,5 +5,7 @@
 //! is pure Rust with no web dependencies so it is natively testable.
 
 pub mod error;
+pub mod preprocess;
 
 pub use error::CoreError;
+pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};
