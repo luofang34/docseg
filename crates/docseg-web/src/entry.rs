@@ -81,6 +81,8 @@ pub struct DocsegApp {
     /// Most recent reading direction, used by `paint` to derive the
     /// orthogonal-axis flag for the arrow classifier.
     last_direction: std::cell::Cell<ReadingDirection>,
+    /// Currently-selected box index; `-1` means no selection.
+    last_selected: std::cell::Cell<i32>,
 }
 
 #[wasm_bindgen]
@@ -97,6 +99,7 @@ impl DocsegApp {
             last_regions: RefCell::new(Vec::new()),
             next_region_id: std::cell::Cell::new(1),
             last_direction: std::cell::Cell::new(ReadingDirection::VerticalRtl),
+            last_selected: std::cell::Cell::new(-1),
         }
     }
 
@@ -274,6 +277,12 @@ impl DocsegApp {
         } else {
             None
         };
+        let selected = self.last_selected.get();
+        let selected_opt = if selected >= 0 {
+            Some(selected as usize)
+        } else {
+            None
+        };
         let direction_ortho_x = matches!(
             self.last_direction.get(),
             ReadingDirection::VerticalRtl | ReadingDirection::VerticalLtr
@@ -287,8 +296,16 @@ impl DocsegApp {
             direction_ortho_x,
             show_order,
             highlight,
+            selected_opt,
         )
         .map_err(|e| JsError::new(&format!("paint failed: {e:?}")))
+    }
+
+    /// Set which box is currently selected; -1 clears. Drives the
+    /// 8-handle rendering pass in paint().
+    #[wasm_bindgen(js_name = setSelected)]
+    pub fn set_selected(&self, id: i32) {
+        self.last_selected.set(id);
     }
 
     /// Hit-test the last postprocess result. Returns the 0-based id of the

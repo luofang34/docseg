@@ -20,6 +20,7 @@ const LABEL_BG: &str = "rgba(0, 0, 0, 0.6)";
 /// box in a distinct color so the ribbon-to-canvas hover affordance has a
 /// visible target. `regions` and `reading_direction_orthogonal_is_x` control
 /// the three-style arrow classifier: Continue, CarriageReturn, RegionBreak.
+/// `selected_id`, when `Some(id)`, renders 8 resize handles around that box.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_with_order(
     ctx: &CanvasRenderingContext2d,
@@ -30,15 +31,62 @@ pub fn paint_with_order(
     reading_direction_orthogonal_is_x: bool,
     show_order: bool,
     highlight_id: Option<usize>,
+    selected_id: Option<usize>,
 ) -> Result<(), JsValue> {
     ctx.draw_image_with_html_image_element(image, 0.0, 0.0)?;
-    ctx.set_line_width(2.0);
 
-    // Pass 1: box outlines.
-    ctx.set_stroke_style_str(BOX_STROKE);
-    for b in boxes {
-        stroke_quad(ctx, b);
+    // Pass 0: region overlays (drawn behind boxes).
+    for r in regions {
+        if let docseg_core::regions::RegionShape::Rect {
+            xmin,
+            ymin,
+            xmax,
+            ymax,
+        } = r.shape
+        {
+            let (stroke, fill) = region_colors(r.role);
+            ctx.set_fill_style_str(fill);
+            ctx.fill_rect(
+                xmin.into(),
+                ymin.into(),
+                (xmax - xmin).into(),
+                (ymax - ymin).into(),
+            );
+            ctx.set_stroke_style_str(stroke);
+            ctx.set_line_width(1.0);
+            ctx.stroke_rect(
+                xmin.into(),
+                ymin.into(),
+                (xmax - xmin).into(),
+                (ymax - ymin).into(),
+            );
+        }
     }
+
+    // Pass 1: box outlines (low-confidence gets dashed; manual gets cyan inner ring).
+    let score_thr = low_confidence_threshold(boxes);
+    ctx.set_line_width(2.0);
+    for b in boxes {
+        let low_conf = b.score < score_thr;
+        if low_conf {
+            let dash = js_sys::Array::new();
+            dash.push(&JsValue::from(4.0));
+            dash.push(&JsValue::from(3.0));
+            ctx.set_line_dash(&dash).ok();
+        } else {
+            ctx.set_line_dash(&js_sys::Array::new()).ok();
+        }
+        ctx.set_stroke_style_str(BOX_STROKE);
+        stroke_quad(ctx, b);
+        if b.manual {
+            ctx.set_line_dash(&js_sys::Array::new()).ok();
+            ctx.set_stroke_style_str("rgba(80, 220, 255, 0.9)");
+            ctx.set_line_width(1.0);
+            stroke_quad_inset(ctx, b, 2.0);
+            ctx.set_line_width(2.0);
+        }
+    }
+    ctx.set_line_dash(&js_sys::Array::new()).ok();
 
     // Pass 2: arrows — three styles:
     //   continue        = solid thin line, no arrowhead (same line/column of same region)
@@ -130,6 +178,38 @@ pub fn paint_with_order(
             ctx.set_stroke_style_str(HIGHLIGHT_STROKE);
             ctx.set_line_width(4.0);
             stroke_quad(ctx, b);
+        }
+    }
+
+    // Pass 5: selection handles on the currently-selected box.
+    if let Some(sid) = selected_id {
+        if let Some(b) = boxes.get(sid) {
+            let p = &b.quad.points;
+            let xs = [p[0].x, p[1].x, p[2].x, p[3].x];
+            let ys = [p[0].y, p[1].y, p[2].y, p[3].y];
+            let xmin = xs.iter().copied().fold(f32::INFINITY, f32::min);
+            let xmax = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let ymin = ys.iter().copied().fold(f32::INFINITY, f32::min);
+            let ymax = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let midx = (xmin + xmax) * 0.5;
+            let midy = (ymin + ymax) * 0.5;
+            let handles = [
+                (xmin, ymin),
+                (midx, ymin),
+                (xmax, ymin),
+                (xmax, midy),
+                (xmax, ymax),
+                (midx, ymax),
+                (xmin, ymax),
+                (xmin, midy),
+            ];
+            ctx.set_fill_style_str("rgba(80, 220, 255, 0.95)");
+            ctx.set_stroke_style_str("rgba(0, 0, 0, 0.8)");
+            ctx.set_line_width(1.0);
+            for (hx, hy) in handles {
+                ctx.fill_rect((hx - 3.0).into(), (hy - 3.0).into(), 6.0, 6.0);
+                ctx.stroke_rect((hx - 3.0).into(), (hy - 3.0).into(), 6.0, 6.0);
+            }
         }
     }
 
@@ -261,4 +341,52 @@ fn draw_arrow_head(ctx: &CanvasRenderingContext2d, ax: f32, ay: f32, bx: f32, by
     ctx.move_to(bx.into(), by.into());
     ctx.line_to((bx + rx * size).into(), (by + ry * size).into());
     ctx.stroke();
+}
+
+fn stroke_quad_inset(ctx: &CanvasRenderingContext2d, b: &CharBox, inset: f32) {
+    let p = &b.quad.points;
+    // Move each corner inward along its diagonal toward the centroid by `inset` pixels.
+    let cx = (p[0].x + p[1].x + p[2].x + p[3].x) * 0.25;
+    let cy = (p[0].y + p[1].y + p[2].y + p[3].y) * 0.25;
+    ctx.begin_path();
+    let mut first = true;
+    for pt in p {
+        let dx = pt.x - cx;
+        let dy = pt.y - cy;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        let x = pt.x - dx / len * inset;
+        let y = pt.y - dy / len * inset;
+        if first {
+            ctx.move_to(x.into(), y.into());
+            first = false;
+        } else {
+            ctx.line_to(x.into(), y.into());
+        }
+    }
+    ctx.close_path();
+    ctx.stroke();
+}
+
+/// Dashed-outline threshold: score < median − MAD. Returns 0 when boxes is empty.
+fn low_confidence_threshold(boxes: &[CharBox]) -> f32 {
+    if boxes.is_empty() {
+        return 0.0;
+    }
+    let mut scores: Vec<f32> = boxes.iter().map(|b| b.score).collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = scores[scores.len() / 2];
+    let mut devs: Vec<f32> = scores.iter().map(|s| (s - median).abs()).collect();
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mad = devs[devs.len() / 2];
+    (median - mad).max(0.0)
+}
+
+fn region_colors(role: docseg_core::regions::RegionRole) -> (&'static str, &'static str) {
+    use docseg_core::regions::RegionRole;
+    match role {
+        RegionRole::Header => ("rgba(80, 140, 255, 0.9)", "rgba(80, 140, 255, 0.10)"),
+        RegionRole::Body => ("rgba(180, 180, 180, 0.0)", "rgba(180, 180, 180, 0.0)"),
+        RegionRole::Footer => ("rgba(80, 220, 120, 0.9)", "rgba(80, 220, 120, 0.10)"),
+        RegionRole::Notes => ("rgba(200, 120, 240, 0.9)", "rgba(200, 120, 240, 0.10)"),
+    }
 }
