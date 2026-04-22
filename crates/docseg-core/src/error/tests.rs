@@ -58,3 +58,13 @@ fn postprocess_error_carries_reason() {
     assert!(format!("{err}").contains("postprocess"));
     assert!(format!("{err}").contains("heatmap shape mismatch"));
 }
+
+#[test]
+fn model_fetch_preserves_source_chain() {
+    let err = CoreError::ModelFetch {
+        url: "x".into(),
+        source: Box::new(std::io::Error::other("boom")),
+    };
+    let src = std::error::Error::source(&err).expect("has source");
+    assert!(src.to_string().contains("boom"));
+}
