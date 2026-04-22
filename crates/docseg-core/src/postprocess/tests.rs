@@ -216,3 +216,33 @@ fn pad_region_ghost_component_is_dropped() {
         boxes.len()
     );
 }
+
+#[test]
+fn charbox_has_manual_flag_defaulting_false() {
+    // Any auto-detected CharBox should have manual = false by default.
+    let mut map = vec![0.0_f32; 32 * 32];
+    for y in 8..12 {
+        for x in 8..12 {
+            map[y * 32 + x] = 0.9;
+        }
+    }
+    let boxes = charboxes_from_heatmap(
+        &map,
+        None,
+        32,
+        32,
+        &fake_preproc(64, 64, 1.0),
+        PostprocessOptions {
+            region_threshold: 0.5,
+            min_component_area_px: 1,
+            max_aspect_ratio: 8.0,
+            erosion_px: 0,
+            axis_aligned: false,
+            ..Default::default()
+        },
+    );
+    assert!(!boxes.is_empty());
+    for b in &boxes {
+        assert!(!b.manual, "auto-detected box should have manual = false");
+    }
+}

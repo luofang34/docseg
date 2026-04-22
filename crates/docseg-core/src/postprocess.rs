@@ -137,6 +137,12 @@ pub struct CharBox {
     pub quad: Quad,
     /// Max region-score within the component (0..1).
     pub score: f32,
+    /// `true` when the box was added or edited by the user. Set by
+    /// `DocsegApp::add_box_manual` / `DocsegApp::update_box`, preserved
+    /// through postprocess re-runs via the IoU-merge rule in
+    /// `postprocess_merge::merge_manual_with_auto`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub manual: bool,
 }
 
 /// Full heatmap → `CharBox` pipeline: threshold (region ∧ ¬affinity),
@@ -207,7 +213,11 @@ pub fn charboxes_from_heatmap(
         if !quad_centroid_inside(&quad, preproc.original_size) {
             continue;
         }
-        out.push(CharBox { quad, score });
+        out.push(CharBox {
+            quad,
+            score,
+            manual: false,
+        });
     }
     out
 }

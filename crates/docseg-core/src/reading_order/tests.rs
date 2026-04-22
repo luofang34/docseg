@@ -13,6 +13,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> CharBox {
             Point::new(x, y + h),
         ]),
         score: 1.0,
+        manual: false,
     }
 }
 
