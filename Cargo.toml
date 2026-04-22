@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/docseg-core"]
+members = ["crates/docseg-core", "crates/docseg-web"]
 
 [workspace.package]
 edition = "2021"
