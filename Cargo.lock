@@ -376,12 +376,14 @@ dependencies = [
  "pollster",
  "protobuf",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "tracing",
  "tracing-subscriber",
  "ulid",
  "wonnx",
+ "zip",
 ]
 
 [[package]]

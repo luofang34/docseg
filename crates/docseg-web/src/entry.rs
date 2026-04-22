@@ -551,6 +551,39 @@ impl DocsegApp {
         self.last_selected.set(-1);
     }
 
+    /// Return a JSON diff (list of `DiffEntry`) between the caller-
+    /// provided `auto_boxes_json` (what CRAFT proposed at the slider
+    /// values on first entry) and the current `last_boxes`.
+    #[wasm_bindgen(js_name = diffSnapshot)]
+    pub fn diff_snapshot(&self, auto_boxes_json: &str) -> Result<JsValue, JsError> {
+        use docseg_core::diff::compute_diff;
+        #[derive(serde::Deserialize)]
+        struct QuadJs {
+            points: [[f32; 2]; 4],
+            score: f32,
+            #[serde(default)]
+            manual: bool,
+        }
+        let auto_quads: Vec<QuadJs> = serde_json::from_str(auto_boxes_json)
+            .map_err(|e| JsError::new(&format!("parse auto_boxes: {e}")))?;
+        let auto: Vec<docseg_core::postprocess::CharBox> = auto_quads
+            .into_iter()
+            .map(|q| docseg_core::postprocess::CharBox {
+                quad: docseg_core::geometry::Quad::new([
+                    docseg_core::geometry::Point::new(q.points[0][0], q.points[0][1]),
+                    docseg_core::geometry::Point::new(q.points[1][0], q.points[1][1]),
+                    docseg_core::geometry::Point::new(q.points[2][0], q.points[2][1]),
+                    docseg_core::geometry::Point::new(q.points[3][0], q.points[3][1]),
+                ]),
+                score: q.score,
+                manual: q.manual,
+            })
+            .collect();
+        let current = self.last_boxes.borrow().clone();
+        let entries = compute_diff(&auto, &current);
+        serde_wasm_bindgen::to_value(&entries).map_err(|e| JsError::new(&format!("{e}")))
+    }
+
     /// Serialize every region as JSON — an array of
     /// `{id, xmin, ymin, xmax, ymax, role, rank}` objects.
     /// Polygon regions (not emitted by the v1 UI) are flattened to their

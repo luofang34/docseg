@@ -10,6 +10,7 @@ const { DocsegApp } = pkgMod;
 const init = pkgMod.default;
 const toolsMod = await import(`./tools.js?t=${BUILD_TAG}`);
 const filmMod = await import(`./filmstrip.js?t=${BUILD_TAG}`);
+const diffMod = await import(`./diff-view.js?t=${BUILD_TAG}`);
 
 // The CRAFT ONNX lives at this URL. Swap to a HuggingFace resolve URL
 // (huggingface.co/<user>/<repo>/resolve/main/craft_mlt_25k.onnx) once the
@@ -33,6 +34,8 @@ const state = {
   drawSequence: [],
   highlightId: -1,
 };
+
+const diffState = { on: false, autoSnapshot: null };
 
 const sessionDefaults = {
   regionThreshold: null,
@@ -109,6 +112,15 @@ function wireUi() {
     onSelect: (i) => loadBatchPage(i),
   });
 
+  window.addEventListener("keydown", (ev) => {
+    if (ev.target?.tagName === "INPUT" || ev.target?.tagName === "SELECT") return;
+    if (ev.ctrlKey && ev.shiftKey && (ev.key === "D" || ev.key === "d")) {
+      diffState.on = !diffState.on;
+      repaint();
+      status(`diff view: ${diffState.on ? "on" : "off"}`);
+      ev.preventDefault();
+    }
+  });
   window.addEventListener("keydown", (ev) => {
     if (ev.target?.tagName === "INPUT" || ev.target?.tagName === "SELECT") return;
     if (ev.metaKey || ev.ctrlKey) return;
@@ -215,6 +227,14 @@ async function runDetection(blob) {
   state.lastImage = htmlImg;
 
   runPostprocess();
+  // Snapshot what CRAFT proposed BEFORE any manual edits for the diff view.
+  diffState.autoSnapshot = JSON.stringify(
+    (state.lastDetection?.boxes ?? []).map((b) => ({
+      points: b.quad.map(([x, y]) => [x, y]),
+      score: b.score,
+      manual: b.manual ?? false,
+    })),
+  );
   status(
     `detected ${state.lastDetection.boxes.length} characters | ` +
     `preprocess ${(tPre - t0).toFixed(0)}ms, ` +
@@ -351,6 +371,14 @@ function repaint() {
     $("show-order").checked,
     state.highlightId,
   );
+  if (diffState.on && diffState.autoSnapshot) {
+    try {
+      const entries = state.app.diffSnapshot(diffState.autoSnapshot);
+      diffMod.drawDiff(ctx, entries);
+    } catch (e) {
+      console.error("diff overlay failed", e);
+    }
+  }
 }
 
 function renderRibbon() {
@@ -426,6 +454,7 @@ async function loadBatchPage(i) {
   const page = batch.pages[i];
   state.app.resetForBatch();
   applySessionDefaults();
+  diffState.autoSnapshot = null;
   await runDetection(page.blob);
   if (page.persisted) rehydrate(page.persisted);
   if (page.status === "untouched") {
