@@ -72,13 +72,15 @@ struct BoxEntry {
     id: u32,
     quad: [[f32; 2]; 4],
     score: f32,
+    manual: bool,
 }
 
-/// Bundle every box's AABB crop + a `boxes.json` manifest into a single
-/// DEFLATE-compressed zip.
+/// Bundle every box's AABB crop + a `boxes.json` manifest + a `regions.json`
+/// into a single DEFLATE-compressed zip.
 pub fn export_zip(
     image_bytes: &[u8],
     boxes: &[CharBox],
+    regions: &[docseg_core::regions::Region],
     model_name: &str,
 ) -> Result<Vec<u8>, CoreError> {
     let img = image::load_from_memory(image_bytes).map_err(CoreError::Decode)?;
@@ -109,6 +111,7 @@ pub fn export_zip(
                         [b.quad.points[3].x, b.quad.points[3].y],
                     ],
                     score: b.score,
+                    manual: b.manual,
                 })
                 .collect(),
         };
@@ -123,6 +126,24 @@ pub fn export_zip(
         zipw.write_all(&manifest_bytes)
             .map_err(|e| CoreError::Postprocess {
                 reason: format!("zip write boxes.json: {e}"),
+            })?;
+
+        #[derive(serde::Serialize)]
+        struct RegionsOut<'a> {
+            regions: &'a [docseg_core::regions::Region],
+        }
+        let regions_payload = RegionsOut { regions };
+        let regions_body =
+            serde_json::to_vec_pretty(&regions_payload).map_err(|e| CoreError::Postprocess {
+                reason: format!("regions json: {e}"),
+            })?;
+        zipw.start_file("regions.json", opts)
+            .map_err(|e| CoreError::Postprocess {
+                reason: format!("zip start regions.json: {e}"),
+            })?;
+        zipw.write_all(&regions_body)
+            .map_err(|e| CoreError::Postprocess {
+                reason: format!("zip write regions.json: {e}"),
             })?;
 
         for i in 0..boxes.len() {

@@ -331,14 +331,15 @@ impl DocsegApp {
         .map_err(|e| JsError::new(&format!("{e:#}")))
     }
 
-    /// Export a zip containing every crop + a `boxes.json` manifest,
-    /// using the state retained from the last `preprocessImage` +
-    /// `postprocess` calls.
+    /// Export a zip containing every crop + a `boxes.json` manifest +
+    /// a `regions.json`, using the state retained from the last
+    /// `preprocessImage` + `postprocess` calls.
     #[wasm_bindgen(js_name = exportZip)]
     pub fn export_zip(&self) -> Result<Vec<u8>, JsError> {
         crate::export::export_zip(
             &self.last_image_bytes.borrow(),
             &self.last_boxes.borrow(),
+            &self.last_regions.borrow(),
             "craft_mlt_25k",
         )
         .map_err(|e| JsError::new(&format!("{e:#}")))
