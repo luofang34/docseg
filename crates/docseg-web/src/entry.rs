@@ -73,6 +73,10 @@ pub struct DocsegApp {
     /// `computeReadingOrder` or overridden via `setCustomOrder`.
     /// Empty until a postprocess run completes.
     last_order: RefCell<Vec<usize>>,
+    /// User-drawn layout regions for the current page.
+    last_regions: RefCell<Vec<docseg_core::regions::Region>>,
+    /// Monotonically increasing counter used to assign stable region ids.
+    next_region_id: std::cell::Cell<u32>,
 }
 
 #[wasm_bindgen]
@@ -86,6 +90,8 @@ impl DocsegApp {
             last_image_bytes: RefCell::new(Vec::new()),
             last_boxes: RefCell::new(Vec::new()),
             last_order: RefCell::new(Vec::new()),
+            last_regions: RefCell::new(Vec::new()),
+            next_region_id: std::cell::Cell::new(1),
         }
     }
 
@@ -347,6 +353,134 @@ impl DocsegApp {
         }
         Ok(())
     }
+
+    /// Add a new axis-aligned region. `role` is one of `"header"`, `"body"`,
+    /// `"footer"`, `"notes"` (case-insensitive). Returns the new region id.
+    #[wasm_bindgen(js_name = addRegion)]
+    pub fn add_region(
+        &self,
+        xmin: f32,
+        ymin: f32,
+        xmax: f32,
+        ymax: f32,
+        role: &str,
+        rank: u32,
+    ) -> Result<u32, JsError> {
+        use docseg_core::regions::{Region, RegionShape};
+        if xmax <= xmin || ymax <= ymin {
+            return Err(JsError::new("zero-area region"));
+        }
+        let role = parse_role(role).ok_or_else(|| JsError::new("unknown role"))?;
+        let id = self.next_region_id.get();
+        self.next_region_id.set(id.wrapping_add(1));
+        let region = Region {
+            id,
+            shape: RegionShape::Rect {
+                xmin,
+                ymin,
+                xmax,
+                ymax,
+            },
+            role,
+            rank,
+        };
+        self.last_regions.borrow_mut().push(region);
+        Ok(id)
+    }
+
+    /// Replace an existing region's geometry, role, and rank.
+    /// `role` is one of `"header"`, `"body"`, `"footer"`, `"notes"`
+    /// (case-insensitive). No-op when `id` is unknown.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = updateRegion)]
+    pub fn update_region(
+        &self,
+        id: u32,
+        xmin: f32,
+        ymin: f32,
+        xmax: f32,
+        ymax: f32,
+        role: &str,
+        rank: u32,
+    ) -> Result<(), JsError> {
+        use docseg_core::regions::RegionShape;
+        if xmax <= xmin || ymax <= ymin {
+            return Err(JsError::new("zero-area region"));
+        }
+        let role = parse_role(role).ok_or_else(|| JsError::new("unknown role"))?;
+        let mut regions = self.last_regions.borrow_mut();
+        if let Some(r) = regions.iter_mut().find(|r| r.id == id) {
+            r.shape = RegionShape::Rect {
+                xmin,
+                ymin,
+                xmax,
+                ymax,
+            };
+            r.role = role;
+            r.rank = rank;
+        }
+        Ok(())
+    }
+
+    /// Remove a region by id. No-op when id is unknown.
+    #[wasm_bindgen(js_name = removeRegion)]
+    pub fn remove_region(&self, id: u32) -> Result<(), JsError> {
+        self.last_regions.borrow_mut().retain(|r| r.id != id);
+        Ok(())
+    }
+
+    /// Serialize every region as JSON — an array of
+    /// `{id, xmin, ymin, xmax, ymax, role, rank}` objects.
+    /// Polygon regions (not emitted by the v1 UI) are flattened to their
+    /// bounding-box zeros so the array length stays consistent.
+    #[wasm_bindgen(js_name = listRegions)]
+    pub fn list_regions(&self) -> Result<JsValue, JsError> {
+        use docseg_core::regions::RegionShape;
+        #[derive(serde::Serialize)]
+        struct RegionJs {
+            id: u32,
+            xmin: f32,
+            ymin: f32,
+            xmax: f32,
+            ymax: f32,
+            role: &'static str,
+            rank: u32,
+        }
+        let rows: Vec<RegionJs> = self
+            .last_regions
+            .borrow()
+            .iter()
+            .map(|r| {
+                let RegionShape::Rect {
+                    xmin,
+                    ymin,
+                    xmax,
+                    ymax,
+                } = r.shape
+                else {
+                    return RegionJs {
+                        id: r.id,
+                        xmin: 0.0,
+                        ymin: 0.0,
+                        xmax: 0.0,
+                        ymax: 0.0,
+                        role: role_str(r.role),
+                        rank: r.rank,
+                    };
+                };
+                RegionJs {
+                    id: r.id,
+                    xmin,
+                    ymin,
+                    xmax,
+                    ymax,
+                    role: role_str(r.role),
+                    rank: r.rank,
+                }
+            })
+            .collect();
+        serde_wasm_bindgen::to_value(&rows).map_err(|e| JsError::new(&format!("{e}")))
+    }
 }
 
 impl Default for DocsegApp {
@@ -366,4 +500,25 @@ fn rect_quad(xmin: f32, ymin: f32, xmax: f32, ymax: f32) -> Option<docseg_core::
         Point::new(xmax, ymax),
         Point::new(xmin, ymax),
     ]))
+}
+
+fn parse_role(s: &str) -> Option<docseg_core::regions::RegionRole> {
+    use docseg_core::regions::RegionRole;
+    match s.to_ascii_lowercase().as_str() {
+        "header" => Some(RegionRole::Header),
+        "body" => Some(RegionRole::Body),
+        "footer" => Some(RegionRole::Footer),
+        "notes" => Some(RegionRole::Notes),
+        _ => None,
+    }
+}
+
+fn role_str(r: docseg_core::regions::RegionRole) -> &'static str {
+    use docseg_core::regions::RegionRole;
+    match r {
+        RegionRole::Header => "header",
+        RegionRole::Body => "body",
+        RegionRole::Footer => "footer",
+        RegionRole::Notes => "notes",
+    }
 }
