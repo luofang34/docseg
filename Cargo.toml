@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/docseg-core"]
-# crates/docseg-web is added in Task 11 of the implementation plan.
 
 [workspace.package]
 edition = "2021"
