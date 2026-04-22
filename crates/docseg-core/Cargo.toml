@@ -25,3 +25,17 @@ serde = ["dep:serde"]
 
 [lints]
 workspace = true
+
+# wonnx pulls in wgpu, which does not build cleanly for bare
+# wasm32-unknown-unknown (it wants wasm-bindgen-backed web-sys Gpu* bindings
+# that the docseg-web crate will wire up separately). docseg-core on the
+# web consumes CRAFT via that future wasm-bindgen path, not via wonnx's
+# native session. Restrict wonnx + its runtime deps to non-wasm targets
+# so `cargo check --target wasm32-unknown-unknown` on this crate stays green.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.wonnx]
+version = "0.5"
+default-features = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
