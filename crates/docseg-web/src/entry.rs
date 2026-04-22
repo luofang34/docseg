@@ -94,13 +94,19 @@ impl DocsegApp {
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&format!("{e}")))
     }
 
-    /// Convert the region-score heatmap (post-inference) into per-character
-    /// boxes. `region_data` is the flat float32 region channel extracted by
-    /// JS from the onnxruntime-web output tensor.
+    /// Convert CRAFT's region + affinity heatmaps into per-character boxes.
+    ///
+    /// `region_data` is the flat float32 region channel extracted by JS
+    /// from the onnxruntime-web output tensor. `affinity_data` is the
+    /// affinity channel; pass an empty array to disable inter-character
+    /// masking (word-level behavior). For Chinese / Yi / other vertically-
+    /// stacked cursive scripts pass the real affinity channel so
+    /// vertically-touching glyphs don't merge into one vertical blob.
     #[allow(clippy::too_many_arguments)]
     pub fn postprocess(
         &self,
         region_data: Vec<f32>,
+        affinity_data: Vec<f32>,
         heatmap_w: u32,
         heatmap_h: u32,
         scale: f32,
@@ -116,8 +122,14 @@ impl DocsegApp {
             pad_offset: (0, 0),
             original_size: (original_w, original_h),
         };
+        let affinity = if affinity_data.is_empty() {
+            None
+        } else {
+            Some(affinity_data.as_slice())
+        };
         let boxes = charboxes_from_heatmap(
             &region_data,
+            affinity,
             heatmap_w,
             heatmap_h,
             &pre,

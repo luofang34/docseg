@@ -1,4 +1,10 @@
-import init, { DocsegApp } from "./pkg/docseg_web.js";
+// Dynamic import with a build-time cache-buster so Python's http.server
+// (which happily serves 304 Not Modified to Chrome's module cache) can't
+// pin us to a stale wasm during iteration.
+const BUILD_TAG = `${Date.now()}`;
+const pkgMod = await import(`./pkg/docseg_web.js?t=${BUILD_TAG}`);
+const { DocsegApp } = pkgMod;
+const init = pkgMod.default;
 
 const MODEL_URL = "./models/craft_mlt_25k.onnx";
 
@@ -24,7 +30,7 @@ async function main() {
     "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
 
   status("loading wasm…");
-  await init();
+  await init(`./pkg/docseg_web_bg.wasm?t=${BUILD_TAG}`);
   const app = new DocsegApp();
 
   status("fetching model (~83 MB, cached after first load)…");
@@ -83,21 +89,28 @@ async function runDetection(app, session, blob) {
   const tInfer = performance.now();
 
   const out = outputs[outputName];
-  // CRAFT output is [1, H/2, W/2, 2]; extract the region channel (idx 0).
+  // CRAFT output is [1, H/2, W/2, 2] — channel 0 is region (character body),
+  // channel 1 is affinity (inter-character space). For vertically-stacked
+  // glyphs we need BOTH: the Rust postprocess masks out pixels where
+  // affinity is high so touching characters in a column split cleanly.
   const { dims, data } = out;
   if (dims.length !== 4 || dims[3] !== 2) {
     throw new Error(`unexpected ort output shape ${JSON.stringify(dims)}`);
   }
   const hmH = dims[1];
   const hmW = dims[2];
-  const region = new Float32Array(hmH * hmW);
-  for (let i = 0; i < region.length; i++) {
+  const plane = hmH * hmW;
+  const region = new Float32Array(plane);
+  const affinity = new Float32Array(plane);
+  for (let i = 0; i < plane; i++) {
     region[i] = data[i * 2];
+    affinity[i] = data[i * 2 + 1];
   }
 
   status("postprocessing…");
   const detection = app.postprocess(
     region,
+    affinity,
     hmW,
     hmH,
     pre.scale,

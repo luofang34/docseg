@@ -50,8 +50,9 @@ fn end_to_end_detects_three_blobs() {
         region_threshold: 0.2,
         min_component_area_px: 8,
         max_aspect_ratio: 8.0,
+        ..Default::default()
     };
-    let boxes = charboxes_from_heatmap(&region.data, region.width, region.height, &pre, opts);
+    let boxes = charboxes_from_heatmap(&region.data, None, region.width, region.height, &pre, opts);
 
     // Three blobs — tolerate ±1 in case CRAFT accidentally merges or splits.
     println!(

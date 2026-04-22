@@ -5,6 +5,8 @@
 //! original-image coordinate mapping.
 
 use image::{GrayImage, Luma};
+use imageproc::distance_transform::Norm;
+use imageproc::morphology::erode;
 use imageproc::region_labelling::{connected_components, Connectivity};
 
 use crate::geometry::{min_area_quad, Point, Quad};
@@ -19,52 +21,93 @@ use serde::{Deserialize, Serialize};
 pub struct PostprocessOptions {
     /// Pixels with region score ≥ this are "inside a character."
     pub region_threshold: f32,
+    /// Pixels with affinity score ≥ this are "between two characters" and
+    /// are masked out of the character region. Word-level CRAFT trained on
+    /// horizontal Latin/MLT text produces strong affinity between
+    /// horizontally adjacent glyphs; on vertical Chinese stacks this
+    /// channel rarely fires where we need splits, so it's a soft signal
+    /// here — the main vertical-split lever is `erosion_px`.
+    pub affinity_threshold: f32,
+    /// Binary-mask erosion radius in heatmap pixels applied before
+    /// connected-component labelling. 1 is enough to break the thin
+    /// activation bridges that otherwise merge vertically-touching glyphs
+    /// in dense cursive columns; 0 disables. The erosion uses an L∞
+    /// (chessboard) norm so both 4- and 8-connected bridges break at the
+    /// same radius.
+    pub erosion_px: u8,
     /// Drop components with fewer pixels than this (removes red-seal and
-    /// speckle noise). Consumed by Task 8's `CharBox` extraction.
+    /// speckle noise). Applied AFTER erosion.
     pub min_component_area_px: u32,
     /// Drop components whose oriented-rect aspect ratio (long/short) exceeds
-    /// this — filters streaks from gutter ink. Consumed by Task 8.
+    /// this — filters streaks from gutter ink.
     pub max_aspect_ratio: f32,
+    /// If `true`, emit axis-aligned rectangles instead of min-area rotated
+    /// quads. CRAFT's min-area rect tends to spuriously rotate around
+    /// roughly-upright glyphs (producing visibly tilted overlays on vertical
+    /// Chinese / Yi manuscripts); AABBs track the character shape more
+    /// predictably. Set to `false` to opt back into rotated rects for scripts
+    /// with genuinely slanted glyphs.
+    pub axis_aligned: bool,
 }
 
 impl Default for PostprocessOptions {
     fn default() -> Self {
         Self {
             region_threshold: 0.4,
-            min_component_area_px: 12,
+            affinity_threshold: 0.3,
+            erosion_px: 0,
+            min_component_area_px: 8,
             max_aspect_ratio: 8.0,
+            axis_aligned: true,
         }
     }
 }
 
-/// Binarize the heatmap with `opts.region_threshold` and return each
-/// 4-connected component as a point list in heatmap coordinates.
+/// Binarize the region heatmap with `opts.region_threshold`, optionally
+/// subtract the affinity heatmap (pixels above `opts.affinity_threshold`
+/// are masked out), and return each 4-connected component as a point list
+/// in heatmap coordinates.
+///
+/// `affinity` is optional: pass `None` to disable inter-character masking
+/// (the behavior from the original word-level CRAFT workflow). Pass
+/// `Some(&affinity_map)` for character-level splitting — required to
+/// prevent vertically-touching Chinese/Yi glyphs from merging into one
+/// vertical blob.
 ///
 /// Components are unfiltered; callers apply area/aspect filters later.
-/// Returns an empty `Vec` for zero-size maps or when `map.len()` doesn't
-/// match `width * height` (caller misuse is quiet rather than panicking —
-/// the workspace bans panics outside tests).
+/// Returns an empty `Vec` for zero-size maps or when any slice's length
+/// doesn't match `width * height`.
 #[must_use]
 pub fn components_from_heatmap(
-    map: &[f32],
+    region: &[f32],
+    affinity: Option<&[f32]>,
     width: u32,
     height: u32,
     opts: PostprocessOptions,
 ) -> Vec<Vec<(u32, u32)>> {
-    if width == 0 || height == 0 || map.len() != (width as usize) * (height as usize) {
+    let plane = (width as usize) * (height as usize);
+    if width == 0 || height == 0 || region.len() != plane {
         return Vec::new();
+    }
+    if let Some(aff) = affinity {
+        if aff.len() != plane {
+            return Vec::new();
+        }
     }
     let mut binary = GrayImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
             let idx = (y as usize) * (width as usize) + (x as usize);
-            let v = if map[idx] >= opts.region_threshold {
-                255
-            } else {
-                0
-            };
+            let in_region = region[idx] >= opts.region_threshold;
+            let is_link = affinity
+                .map(|a| a[idx] >= opts.affinity_threshold)
+                .unwrap_or(false);
+            let v = if in_region && !is_link { 255 } else { 0 };
             binary.put_pixel(x, y, Luma([v]));
         }
+    }
+    if opts.erosion_px > 0 {
+        binary = erode(&binary, Norm::LInf, opts.erosion_px);
     }
     let labels = connected_components(&binary, Connectivity::Four, Luma([0]));
     let mut buckets: Vec<Vec<(u32, u32)>> = Vec::new();
@@ -96,18 +139,24 @@ pub struct CharBox {
     pub score: f32,
 }
 
-/// Full heatmap → `CharBox` pipeline: threshold, connected-components, area
-/// filter, min-area quad fit, aspect filter, map back to original-image
-/// coordinates using the `PreprocessOutput` transform.
+/// Full heatmap → `CharBox` pipeline: threshold (region ∧ ¬affinity),
+/// connected-components, area filter, min-area quad fit, aspect filter,
+/// map back to original-image coordinates using the `PreprocessOutput`
+/// transform.
+///
+/// `affinity` is optional — see [`components_from_heatmap`] for details.
+/// For Chinese / Yi / other vertically-stacked cursive scripts, pass
+/// `Some(&affinity_map)` to split touching characters.
 #[must_use]
 pub fn charboxes_from_heatmap(
-    map: &[f32],
+    region: &[f32],
+    affinity: Option<&[f32]>,
     heatmap_w: u32,
     heatmap_h: u32,
     preproc: &PreprocessOutput,
     opts: PostprocessOptions,
 ) -> Vec<CharBox> {
-    let comps = components_from_heatmap(map, heatmap_w, heatmap_h, opts);
+    let comps = components_from_heatmap(region, affinity, heatmap_w, heatmap_h, opts);
     if comps.is_empty() || heatmap_w == 0 || heatmap_h == 0 || preproc.scale <= 0.0 {
         return Vec::new();
     }
@@ -128,7 +177,7 @@ pub fn charboxes_from_heatmap(
         let mut score = 0.0_f32;
         for (x, y) in &comp {
             let idx = (*y as usize) * (heatmap_w as usize) + (*x as usize);
-            if let Some(v) = map.get(idx) {
+            if let Some(v) = region.get(idx) {
                 if *v > score {
                     score = *v;
                 }
@@ -141,8 +190,16 @@ pub fn charboxes_from_heatmap(
             let oy = (py_padded - pad_oy as f32) * inv_scale;
             pts.push(Point::new(ox, oy));
         }
-        let Some(quad) = min_area_quad(&pts) else {
-            continue;
+        let quad = if opts.axis_aligned {
+            match aabb_quad(&pts) {
+                Some(q) => q,
+                None => continue,
+            }
+        } else {
+            match min_area_quad(&pts) {
+                Some(q) => q,
+                None => continue,
+            }
         };
         if quad_aspect(&quad) > opts.max_aspect_ratio {
             continue;
@@ -153,6 +210,37 @@ pub fn charboxes_from_heatmap(
         out.push(CharBox { quad, score });
     }
     out
+}
+
+fn aabb_quad(pts: &[Point]) -> Option<Quad> {
+    if pts.is_empty() {
+        return None;
+    }
+    let (mut xmin, mut ymin) = (f32::INFINITY, f32::INFINITY);
+    let (mut xmax, mut ymax) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for p in pts {
+        if p.x < xmin {
+            xmin = p.x;
+        }
+        if p.x > xmax {
+            xmax = p.x;
+        }
+        if p.y < ymin {
+            ymin = p.y;
+        }
+        if p.y > ymax {
+            ymax = p.y;
+        }
+    }
+    if xmax <= xmin || ymax <= ymin {
+        return None;
+    }
+    Some(Quad::new([
+        Point::new(xmin, ymin),
+        Point::new(xmax, ymin),
+        Point::new(xmax, ymax),
+        Point::new(xmin, ymax),
+    ]))
 }
 
 fn quad_aspect(q: &Quad) -> f32 {

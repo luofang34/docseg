@@ -23,7 +23,16 @@ fn two_separate_blobs_produce_two_components() {
     ] {
         set(&mut map, x, y);
     }
-    let comps = components_from_heatmap(&map, 8, 4, PostprocessOptions::default());
+    let comps = components_from_heatmap(
+        &map,
+        None,
+        8,
+        4,
+        PostprocessOptions {
+            erosion_px: 0,
+            ..Default::default()
+        },
+    );
     assert_eq!(comps.len(), 2, "expected 2 components, got {}", comps.len());
     for c in &comps {
         assert_eq!(c.len(), 4, "each blob has 4 pixels");
@@ -33,7 +42,7 @@ fn two_separate_blobs_produce_two_components() {
 #[test]
 fn subthreshold_noise_is_excluded() {
     let map = vec![0.1_f32; 16 * 16]; // below default threshold (0.4)
-    let comps = components_from_heatmap(&map, 16, 16, PostprocessOptions::default());
+    let comps = components_from_heatmap(&map, None, 16, 16, PostprocessOptions::default());
     assert!(comps.is_empty());
 }
 
@@ -46,19 +55,21 @@ fn diagonal_touch_does_not_merge_components_under_4_connectivity() {
     map[2 * 4 + 2] = 1.0;
     let opts = PostprocessOptions {
         region_threshold: 0.5,
+        erosion_px: 0,
+        axis_aligned: false,
         ..Default::default()
     };
-    let comps = components_from_heatmap(&map, 4, 4, opts);
+    let comps = components_from_heatmap(&map, None, 4, 4, opts);
     assert_eq!(comps.len(), 2);
 }
 
 #[test]
 fn empty_or_zero_size_heatmap_returns_no_components() {
-    assert!(components_from_heatmap(&[], 0, 0, PostprocessOptions::default()).is_empty());
+    assert!(components_from_heatmap(&[], None, 0, 0, PostprocessOptions::default()).is_empty());
     // Mismatched length is a misuse; returning empty rather than panicking matches
     // the workspace rule of no panics outside tests.
     let map = vec![1.0_f32; 5];
-    assert!(components_from_heatmap(&map, 4, 4, PostprocessOptions::default()).is_empty());
+    assert!(components_from_heatmap(&map, None, 4, 4, PostprocessOptions::default()).is_empty());
 }
 
 use super::charboxes_from_heatmap;
@@ -92,6 +103,7 @@ fn charbox_maps_back_to_original_image_coords() {
     }
     let boxes = charboxes_from_heatmap(
         &map,
+        None,
         32,
         32,
         &fake_preproc(64, 64, 0.5),
@@ -99,6 +111,8 @@ fn charbox_maps_back_to_original_image_coords() {
             region_threshold: 0.5,
             min_component_area_px: 1,
             max_aspect_ratio: 8.0,
+            erosion_px: 0,
+            ..Default::default()
         },
     );
     assert_eq!(boxes.len(), 1);
@@ -123,6 +137,7 @@ fn charbox_area_filter_drops_small_blobs() {
     map[10 * 32 + 10] = 1.0;
     let boxes = charboxes_from_heatmap(
         &map,
+        None,
         32,
         32,
         &fake_preproc(64, 64, 1.0),
@@ -130,6 +145,8 @@ fn charbox_area_filter_drops_small_blobs() {
             region_threshold: 0.5,
             min_component_area_px: 5,
             max_aspect_ratio: 8.0,
+            erosion_px: 0,
+            ..Default::default()
         },
     );
     assert!(boxes.is_empty());
@@ -145,6 +162,7 @@ fn charbox_aspect_filter_drops_long_thin_streaks() {
     }
     let boxes = charboxes_from_heatmap(
         &map,
+        None,
         32,
         32,
         &fake_preproc(64, 64, 1.0),
@@ -152,6 +170,8 @@ fn charbox_aspect_filter_drops_long_thin_streaks() {
             region_threshold: 0.5,
             min_component_area_px: 1,
             max_aspect_ratio: 8.0,
+            erosion_px: 0,
+            ..Default::default()
         },
     );
     assert!(boxes.is_empty(), "got {} boxes; expected 0", boxes.len());
@@ -178,6 +198,7 @@ fn pad_region_ghost_component_is_dropped() {
     };
     let boxes = charboxes_from_heatmap(
         &map,
+        None,
         32,
         32,
         &preproc,
@@ -185,6 +206,8 @@ fn pad_region_ghost_component_is_dropped() {
             region_threshold: 0.5,
             min_component_area_px: 1,
             max_aspect_ratio: 8.0,
+            erosion_px: 0,
+            ..Default::default()
         },
     );
     assert!(
