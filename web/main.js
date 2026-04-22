@@ -8,6 +8,7 @@ const BUILD_TAG = `${Date.now()}`;
 const pkgMod = await import(`./pkg/docseg_web.js?t=${BUILD_TAG}`);
 const { DocsegApp } = pkgMod;
 const init = pkgMod.default;
+const toolsMod = await import(`./tools.js?t=${BUILD_TAG}`);
 
 // The CRAFT ONNX lives at this URL. Swap to a HuggingFace resolve URL
 // (huggingface.co/<user>/<repo>/resolve/main/craft_mlt_25k.onnx) once the
@@ -26,7 +27,8 @@ const state = {
   lastImageBlob: null,
   lastImage: null,
   lastDetection: null,
-  mode: "auto", // "auto" | "draw"
+  mode: "select",
+  selectedId: -1,
   drawSequence: [],
   highlightId: -1,
 };
@@ -74,6 +76,30 @@ async function main() {
 }
 
 function wireUi() {
+  state.selectedId = -1;
+  state.drawSequence = [];
+  toolsMod.initTools({
+    canvas: $("canvas"),
+    app: state.app,
+    state,
+    onChange: () => {
+      renderRibbon();
+      repaint();
+    },
+  });
+  const resetOrder = $("tool-reset-order");
+  if (resetOrder) {
+    resetOrder.addEventListener("click", () => {
+      state.drawSequence = [];
+      const order = state.app.computeReadingOrder($("direction").value);
+      if (state.lastDetection) {
+        state.lastDetection.order = Array.from(order);
+      }
+      renderRibbon();
+      repaint();
+    });
+  }
+
   $("file").addEventListener("change", async (e) => {
     const f = e.target.files[0];
     if (!f) return;
@@ -82,13 +108,6 @@ function wireUi() {
   $("export").addEventListener("click", () => {
     const bytes = state.app.exportZip();
     downloadBlob(new Blob([bytes], { type: "application/zip" }), "docseg.zip");
-  });
-  $("mode-auto").addEventListener("click", () => setMode("auto"));
-  $("mode-draw").addEventListener("click", () => setMode("draw"));
-  $("mode-reset").addEventListener("click", () => {
-    state.drawSequence = [];
-    setMode("auto");
-    applyReadingOrder();
   });
   $("show-order").addEventListener("change", repaint);
   $("direction").addEventListener("change", applyReadingOrder);
@@ -105,43 +124,6 @@ function wireUi() {
     });
   }
   $("axis-aligned").addEventListener("change", recomputeFromCachedHeatmap);
-
-  // Click handler: in "auto" mode downloads a crop; in "draw" mode appends
-  // the clicked box to the custom sequence.
-  $("canvas").addEventListener("click", (ev) => {
-    const canvas = ev.currentTarget;
-    const rect = canvas.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const id = state.app.hit(x, y);
-    if (id < 0) return;
-    if (state.mode === "draw") {
-      if (!state.drawSequence.includes(id)) {
-        state.drawSequence.push(id);
-      }
-      state.app.setCustomOrder(new Uint32Array(state.drawSequence));
-      state.lastDetection.order = Array.from(
-        { length: state.drawSequence.length },
-        (_, i) => state.drawSequence[i],
-      );
-      renderRibbon();
-      repaint();
-      status(
-        `draw order: ${state.drawSequence.length}/${state.lastDetection.boxes.length} picked (click "Reset" to clear)`,
-      );
-    } else {
-      const png = state.app.cropPng(id);
-      downloadBlob(new Blob([png], { type: "image/png" }), `glyph_${id}.png`);
-    }
-  });
-}
-
-function setMode(mode) {
-  state.mode = mode;
-  for (const id of ["mode-auto", "mode-draw"]) {
-    $(id).classList.toggle("mode-active", id === `mode-${mode}`);
-  }
-  $("canvas").style.cursor = mode === "draw" ? "crosshair" : "pointer";
 }
 
 let lastHeatmap = null; // { region: Float32Array, affinity: Float32Array, hmW, hmH, pre }
@@ -149,8 +131,6 @@ let lastHeatmap = null; // { region: Float32Array, affinity: Float32Array, hmW, 
 async function runDetection(blob) {
   state.lastImageBlob = blob;
   state.drawSequence = [];
-  state.mode = "auto";
-  setMode("auto");
   status("decoding + preprocessing…");
   const imgBytes = new Uint8Array(await blob.arrayBuffer());
 
@@ -231,7 +211,7 @@ function runPostprocess() {
 
 function applyReadingOrder() {
   if (!state.lastDetection) return;
-  if (state.mode === "draw" && state.drawSequence.length > 0) {
+  if (state.mode === "order" && state.drawSequence.length > 0) {
     state.app.setCustomOrder(new Uint32Array(state.drawSequence));
     state.lastDetection.order = [...state.drawSequence];
   } else {

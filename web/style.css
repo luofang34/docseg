@@ -119,3 +119,5 @@ button.mode-btn.mode-active {
   border-color: var(--accent);
   color: #eee;
 }
+.tool-palette { display: flex; gap: 4px; }
+.tool-palette button { padding: 6px 8px; font-size: 12px; }

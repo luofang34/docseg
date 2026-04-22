@@ -14,9 +14,14 @@
       <input id="file" type="file" accept="image/png,image/jpeg" />
     </label>
     <button id="export" disabled>Export zip</button>
-    <button id="mode-auto" class="mode-btn mode-active">Auto order</button>
-    <button id="mode-draw" class="mode-btn">Draw order</button>
-    <button id="mode-reset" class="mode-btn" title="Reset custom order">Reset</button>
+    <div class="tool-palette">
+      <button id="tool-select" class="mode-btn mode-active" title="Select (V)">Select</button>
+      <button id="tool-add" class="mode-btn" title="Add box (A)">+ Box</button>
+      <button id="tool-delete" class="mode-btn" title="Delete (D)">− Box</button>
+      <button id="tool-order" class="mode-btn" title="Draw order (O)">Order</button>
+      <button id="tool-region" class="mode-btn" title="Draw region (R)">Region</button>
+      <button id="tool-reset-order" class="mode-btn" title="Reset custom order">Reset order</button>
+    </div>
     <label class="toggle">
       <input id="show-order" type="checkbox" checked />
       Show labels
