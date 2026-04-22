@@ -363,6 +363,7 @@ dependencies = [
  "image",
  "imageproc",
  "pollster",
+ "protobuf",
  "serde",
  "thiserror",
  "tracing",

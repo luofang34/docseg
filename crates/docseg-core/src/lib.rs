@@ -3,14 +3,23 @@
 //! Takes a decoded page image, returns oriented quadrilaterals around each
 //! detected glyph. Target deployment is a browser via WASM, but this crate
 //! is pure Rust with no web dependencies so it is natively testable.
+//!
+//! The `model` module (wonnx-based native inference) is compiled out on
+//! `wasm32` targets — the browser inference path lives in `docseg-web`.
 
 pub mod error;
 pub mod geometry;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod model;
+
 pub mod postprocess;
 pub mod preprocess;
 
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
+#[cfg(not(target_arch = "wasm32"))]
+pub use model::{CraftSession, RegionMap};
 pub use postprocess::{
     charboxes_from_heatmap, components_from_heatmap, CharBox, PostprocessOptions,
 };

@@ -36,6 +36,14 @@ workspace = true
 version = "0.5"
 default-features = false
 
+# wonnx re-exports `onnx::ModelProto` but not the protobuf `Message` trait
+# needed to call `parse_from_bytes`. Pinned to match wonnx's transitive
+# protobuf dep so there is one version in the graph. Native-only for the
+# same reason as wonnx above.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.protobuf]
+version = "2.27"
+default-features = false
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
