@@ -79,43 +79,53 @@ wasm bundle + static assets and publishes them to GitHub Pages. The 83 MB
 CRAFT ONNX is **not** bundled into the deploy artifact; the browser
 fetches it from a URL you set once.
 
-### 1. Host the converted ONNX on Hugging Face
+### 1. Host the ONNX as a GitHub Release asset
 
-(Recommended over GH LFS — LFS bandwidth is metered.)
+GH Release assets have effectively unmetered bandwidth, are CDN-backed,
+and serve `Access-Control-Allow-Origin: *` — enough for this demo, and
+nothing extra to sign up for.
+
+Option A: one-click via the supplied workflow.
+
+- Go to **Actions → "Publish CRAFT ONNX to GitHub Release" → Run workflow**.
+  It sets up a throw-away Python venv, runs `scripts/convert-model.py`,
+  and attaches `craft_mlt_25k.onnx` to a release tagged `model-v1`
+  (creating the release if it doesn't exist). Takes ~3 minutes.
+
+Option B: manual upload.
 
 ```bash
-# One-time: create a public HF model repo and upload the converted ONNX.
-pip install huggingface_hub
-huggingface-cli login
-huggingface-cli upload <your-hf-username>/craft_mlt_25k_onnx_640 \
-    models/craft_mlt_25k.onnx craft_mlt_25k.onnx
+./scripts/fetch-model.sh   # produces models/craft_mlt_25k.onnx
+gh release create model-v1 models/craft_mlt_25k.onnx \
+    --title "CRAFT ONNX (craft_mlt_25k, 640×640)" \
+    --notes "Converted from clovaai/CRAFT-pytorch .pth. SHA-256 pinned in models/EXPECTED_SHA256."
 ```
 
-The browser-facing URL will be:
+Either way, the browser-facing URL will be:
 
 ```
-https://huggingface.co/<your-hf-username>/craft_mlt_25k_onnx_640/resolve/main/craft_mlt_25k.onnx
+https://github.com/<your-user>/<your-repo>/releases/download/model-v1/craft_mlt_25k.onnx
 ```
 
-### 2. Point the workflow at it
+### 2. Point the Pages workflow at it
 
 - In your GitHub repo settings, add a **repository variable** named
-  `DOCSEG_MODEL_URL` with the value above.
+  `DOCSEG_MODEL_URL` with the URL above.
 - In **Settings → Pages**, set "Source" to "GitHub Actions".
 
 Push to `main`; the workflow will build and deploy.
 
 ### Alternative hosting
 
-- **GitHub Release asset.** Upload the ONNX to a Release; use the asset
-  URL as `DOCSEG_MODEL_URL`. Works but locks you to a specific release
-  tag.
-- **`gh-pages` branch bundle.** Remove the `rm -rf deploy/models` line in
-  `pages.yml` and `cp` the converted ONNX into `deploy/models/` before
-  upload. Bloats the repo with each deploy; avoid unless no external
-  hosting is available.
-- **GH LFS.** Not recommended — 1 GB/month free bandwidth ceiling, each
-  demo visit is 83 MB.
+- **Hugging Face Hub.** If you already have an HF account, `hf-cli
+  upload <user>/craft_mlt_25k_onnx_640 models/craft_mlt_25k.onnx` also
+  works and is CDN-backed. `DOCSEG_MODEL_URL` becomes
+  `https://huggingface.co/<user>/craft_mlt_25k_onnx_640/resolve/main/craft_mlt_25k.onnx`.
+- **`gh-pages` branch bundle.** Remove the `rm -rf deploy/models` line
+  in `pages.yml` and `cp` the ONNX into `deploy/models/` before upload.
+  Simple, but every deploy re-commits 83 MB.
+- **GH LFS.** Not recommended — 1 GB/month free bandwidth ceiling,
+  each demo visit is 83 MB.
 
 ## Crates
 

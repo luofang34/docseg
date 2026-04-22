@@ -1,0 +1,74 @@
+name: Publish CRAFT ONNX to GitHub Release
+
+# Manual trigger. One-time-ish: run once to seed the release; re-run if
+# scripts/convert-model.py changes or the upstream .pth moves.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to attach the ONNX to (created if missing)"
+        required: true
+        default: "model-v1"
+      release_title:
+        description: "Release title"
+        required: false
+        default: "CRAFT ONNX (craft_mlt_25k, 640×640)"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-convert-model-${{ hashFiles('scripts/fetch-model.sh') }}
+
+      - name: Build craft_mlt_25k.onnx
+        run: |
+          ./scripts/fetch-model.sh
+          ls -la models/craft_mlt_25k.onnx
+
+      - name: Verify SHA-256 pin
+        run: |
+          actual=$(shasum -a 256 models/craft_mlt_25k.onnx | awk '{print $1}')
+          expected=$(tr -d '[:space:]' < models/EXPECTED_SHA256)
+          if [[ -n "$expected" && "$actual" != "$expected" ]]; then
+            echo "SHA mismatch: expected=$expected actual=$actual" >&2
+            exit 1
+          fi
+          echo "SHA: $actual"
+
+      - name: Publish to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.release_tag }}
+          TITLE: ${{ github.event.inputs.release_title }}
+        run: |
+          set -euo pipefail
+          # Create the release if it doesn't already exist.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes "Converted from clovaai/CRAFT-pytorch .pth via scripts/convert-model.py. Fixed 640x640 input, nearest-mode Resize (wonnx-compatible). SHA-256 pinned in models/EXPECTED_SHA256."
+          fi
+          # Upload (or replace) the asset.
+          gh release upload "$TAG" models/craft_mlt_25k.onnx --clobber
+
+      - name: Print DOCSEG_MODEL_URL
+        env:
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          echo "Set this as the DOCSEG_MODEL_URL repo variable:"
+          echo "  https://github.com/${{ github.repository }}/releases/download/${TAG}/craft_mlt_25k.onnx"
