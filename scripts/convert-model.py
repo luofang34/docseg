@@ -87,46 +87,91 @@ class CraftWrapper(torch.nn.Module):
         return y
 
 
+# CRAFT fixed input resolution. Every runtime input is letterboxed to this
+# square — wonnx 0.5 rejects symbolic ONNX dims, so the graph must be static.
+# 640 fits every default WebGPU limit (max_buffer_size 256 MiB AND
+# max_storage_buffer_binding_size 128 MiB) with margin; 704 is the ceiling
+# but tight, and higher sides require either a wonnx patch or a burn pivot.
+# Heatmap comes out at 320×320.
+MODEL_INPUT_HW = 640
+
+
 def export_onnx(model: torch.nn.Module, onnx_path: str) -> None:
-    """Export CRAFT to ONNX with dynamic spatial axes."""
+    """Export CRAFT to ONNX at a fixed (1, 3, 640, 640) input shape.
+
+    No `dynamic_axes` — wonnx 0.5 rejects parametrized dims, so the graph
+    is fully static. Downstream preprocess is responsible for letterboxing
+    every input image to exactly 640x640.
+
+    Also patches every `Resize` node's `mode` attribute from `linear` to
+    `nearest`. wonnx 0.5 has no implementation for bilinear Resize (see
+    wonnx/src/compiler.rs:1270). Nearest-neighbor upsampling after a
+    bilinear-trained VGG backbone usually degrades gracefully; we validate
+    via the verification overlay before committing.
+
+    The exported graph is then passed through shape inference and
+    onnx-simplifier so every intermediate tensor has a concrete shape.
+    """
+    import onnx
+    from onnx import shape_inference
+    from onnxsim import simplify
+
     wrapped = CraftWrapper(model)
     wrapped.eval()
-    dummy = torch.zeros(1, 3, 640, 640)
-    # Pin the legacy TorchScript-based exporter — it's mature, stable, and
-    # produces ONNX graphs that wonnx's op set handles well. The new dynamo
-    # exporter is not worth the extra risk for a frozen checkpoint.
+    dummy = torch.zeros(1, 3, MODEL_INPUT_HW, MODEL_INPUT_HW)
     torch.onnx.export(
         wrapped,
         dummy,
         onnx_path,
         input_names=["input"],
         output_names=["output"],
-        dynamic_axes={
-            "input": {2: "H", 3: "W"},
-            "output": {1: "H2", 2: "W2"},
-        },
         opset_version=11,
         do_constant_folding=True,
         dynamo=False,
     )
 
+    model_proto = onnx.load(onnx_path)
+    n_patched = 0
+    for node in model_proto.graph.node:
+        if node.op_type != "Resize":
+            continue
+        for attr in node.attribute:
+            if attr.name == "mode" and attr.s == b"linear":
+                attr.s = b"nearest"
+                n_patched += 1
+    print(f"  patched {n_patched} Resize nodes: mode=linear -> mode=nearest")
 
-def _preprocess_for_verify(image_path: str, target_long: int = 1280):
-    """Letterbox + ImageNet-normalize — mirrors the Rust preprocess in Task 5."""
+    model_proto = shape_inference.infer_shapes(model_proto)
+    simplified, check = simplify(model_proto)
+    if not check:
+        raise RuntimeError("onnxsim validation failed on the exported CRAFT graph")
+    onnx.save(simplified, onnx_path)
+
+
+def _preprocess_for_verify(image_path: str):
+    """Letterbox to fixed MODEL_INPUT_HW square + ImageNet-normalize.
+
+    Mirrors the Rust preprocess in Task 5: scale so the long side reaches
+    MODEL_INPUT_HW, place the scaled image at the top-left of a zero-
+    filled square of side MODEL_INPUT_HW, ImageNet-normalize.
+    Returns (canvas_PIL, tensor_numpy, scaled_size) so the caller can
+    render the overlay only over the content region.
+    """
+    side = MODEL_INPUT_HW
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
-    scale = target_long / max(w, h)
-    nw = int(round(w * scale))
-    nh = int(round(h * scale))
-    nw = ((nw + 31) // 32) * 32
-    nh = ((nh + 31) // 32) * 32
-    img_r = img.resize((nw, nh), Image.BILINEAR)
-    arr = np.asarray(img_r, dtype=np.float32) / 255.0
+    scale = side / max(w, h)
+    sw = int(round(w * scale))
+    sh = int(round(h * scale))
+    scaled = img.resize((sw, sh), Image.BILINEAR)
+    canvas = Image.new("RGB", (side, side), (0, 0, 0))
+    canvas.paste(scaled, (0, 0))
+    arr = np.asarray(canvas, dtype=np.float32) / 255.0
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     arr = (arr - mean) / std
     arr = arr.transpose(2, 0, 1)[None].astype(np.float32)
-    return img_r, arr
+    return canvas, arr, (sw, sh)
 
 
 def _extract_region_channel(out: np.ndarray) -> np.ndarray:
@@ -146,7 +191,7 @@ def run_verification(onnx_path: str, image_path: str, overlay_path: str) -> None
         print("  (onnxruntime not installed; skipping visual verification)")
         return
 
-    img_r, tensor = _preprocess_for_verify(image_path)
+    canvas, tensor, (sw, sh) = _preprocess_for_verify(image_path)
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     in_name = sess.get_inputs()[0].name
     out_name = sess.get_outputs()[0].name
@@ -159,16 +204,22 @@ def run_verification(onnx_path: str, image_path: str, overlay_path: str) -> None
         f"mean={region.mean():.3f} frac>0.4={(region > 0.4).mean():.3f}"
     )
 
-    nw, nh = img_r.size
+    side = MODEL_INPUT_HW
     region_u8 = (np.clip(region, 0, 1) * 255).astype(np.uint8)
-    mask = np.asarray(Image.fromarray(region_u8).resize((nw, nh), Image.BILINEAR))
-    base = np.asarray(img_r).astype(np.float32)
+    full_mask = np.asarray(
+        Image.fromarray(region_u8).resize((side, side), Image.BILINEAR)
+    )
+    base = np.asarray(canvas).astype(np.float32)
     red = np.zeros_like(base)
     red[..., 0] = 255.0
-    alpha = (mask.astype(np.float32) / 255.0)[..., None] * 0.55
+    alpha = (full_mask.astype(np.float32) / 255.0)[..., None] * 0.55
     blended = base * (1.0 - alpha) + red * alpha
-    Image.fromarray(blended.astype(np.uint8)).save(overlay_path)
-    print(f"  Saved verification overlay: {overlay_path}")
+    blended_img = Image.fromarray(blended.astype(np.uint8))
+    # Crop back to the content region (where the scaled image actually lives)
+    # so the saved overlay matches the user's input aspect.
+    cropped = blended_img.crop((0, 0, sw, sh))
+    cropped.save(overlay_path)
+    print(f"  Saved verification overlay: {overlay_path} ({sw}x{sh})")
 
 
 def main() -> int:

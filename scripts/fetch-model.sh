@@ -46,6 +46,7 @@ else
   "$TMP/venv/bin/pip" install --quiet \
     "torch>=2.1,<3" "torchvision>=0.16,<1" \
     "onnx>=1.14" "onnxscript>=0.1" "onnxruntime>=1.16" \
+    "onnxsim>=0.4" \
     "pillow>=10" "numpy>=1.26"
 
   echo "==> curl $PTH_URL"
