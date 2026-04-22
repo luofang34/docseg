@@ -18,6 +18,8 @@ imageproc.workspace = true
 geo.workspace = true
 bytemuck.workspace = true
 serde = { workspace = true, optional = true }
+sha2 = "0.10"
+ulid = { version = "1", features = ["serde"] }
 
 [features]
 default = ["serde"]
@@ -47,3 +49,9 @@ default-features = false
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# ulid's `std` feature pulls rand → getrandom. On wasm32-unknown-unknown
+# getrandom needs the `wasm_js` backend; wire it up here so the wasm32
+# check target stays green.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }

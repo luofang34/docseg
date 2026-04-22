@@ -7,6 +7,7 @@
 //! The `model` module (wonnx-based native inference) is compiled out on
 //! `wasm32` targets — the browser inference path lives in `docseg-web`.
 
+pub mod batch;
 pub mod edit_log;
 pub mod error;
 pub mod geometry;
@@ -20,6 +21,7 @@ pub mod preprocess;
 pub mod reading_order;
 pub mod regions;
 
+pub use batch::{Batch, Page, PageStatus, SliderDefaults, SliderValues, CURRENT_SCHEMA_VERSION};
 pub use edit_log::{EditEvent, EditLog};
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
