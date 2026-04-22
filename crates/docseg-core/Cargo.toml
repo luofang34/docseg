@@ -1,0 +1,27 @@
+[package]
+name = "docseg-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Per-character document segmentation (preprocess, CRAFT inference, postprocess). No web deps."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+image.workspace = true
+imageproc.workspace = true
+geo.workspace = true
+bytemuck.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

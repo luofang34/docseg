@@ -1,0 +1,3 @@
+disallowed-types = [
+    { path = "anyhow::Error", reason = "use thiserror in library crates" },
+]

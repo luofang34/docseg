@@ -1,0 +1,5 @@
+/target
+/web/pkg
+/models/*.onnx
+/models/*.bin
+.DS_Store
