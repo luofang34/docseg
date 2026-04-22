@@ -538,6 +538,19 @@ impl DocsegApp {
         true
     }
 
+    /// Clear all per-page state to start a fresh batch session. The
+    /// CRAFT ort session is owned on the JS side and reused; this just
+    /// resets the caches that don't survive a page switch.
+    #[wasm_bindgen(js_name = resetForBatch)]
+    pub fn reset_for_batch(&self) {
+        self.last_image_bytes.borrow_mut().clear();
+        self.last_boxes.borrow_mut().clear();
+        self.last_order.borrow_mut().clear();
+        self.last_regions.borrow_mut().clear();
+        *self.edit_log.borrow_mut() = docseg_core::edit_log::EditLog::new();
+        self.last_selected.set(-1);
+    }
+
     /// Serialize every region as JSON — an array of
     /// `{id, xmin, ymin, xmax, ymax, role, rank}` objects.
     /// Polygon regions (not emitted by the v1 UI) are flattened to their

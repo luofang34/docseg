@@ -9,6 +9,7 @@ const pkgMod = await import(`./pkg/docseg_web.js?t=${BUILD_TAG}`);
 const { DocsegApp } = pkgMod;
 const init = pkgMod.default;
 const toolsMod = await import(`./tools.js?t=${BUILD_TAG}`);
+const filmMod = await import(`./filmstrip.js?t=${BUILD_TAG}`);
 
 // The CRAFT ONNX lives at this URL. Swap to a HuggingFace resolve URL
 // (huggingface.co/<user>/<repo>/resolve/main/craft_mlt_25k.onnx) once the
@@ -32,6 +33,12 @@ const state = {
   drawSequence: [],
   highlightId: -1,
 };
+
+const batch = {
+  pages: [],         // { blob, thumbnailUrl, status, persisted }
+  currentIndex: -1,
+};
+let filmstrip = null;
 
 async function main() {
   if (!("gpu" in navigator)) {
@@ -85,7 +92,25 @@ function wireUi() {
     onChange: () => {
       renderRibbon();
       repaint();
+      touchCurrentPage();
     },
+  });
+
+  filmstrip = filmMod.initFilmstrip({
+    root: $("filmstrip"),
+    onSelect: (i) => loadBatchPage(i),
+  });
+
+  window.addEventListener("keydown", (ev) => {
+    if (ev.target?.tagName === "INPUT" || ev.target?.tagName === "SELECT") return;
+    if (ev.metaKey || ev.ctrlKey) return;
+    if (ev.key === "PageDown" || ev.key === "j") {
+      if (batch.currentIndex >= 0 && batch.currentIndex < batch.pages.length - 1) {
+        loadBatchPage(batch.currentIndex + 1);
+      }
+    } else if (ev.key === "PageUp" || ev.key === "k") {
+      if (batch.currentIndex > 0) loadBatchPage(batch.currentIndex - 1);
+    }
   });
   const resetOrder = $("tool-reset-order");
   if (resetOrder) {
@@ -101,9 +126,16 @@ function wireUi() {
   }
 
   $("file").addEventListener("change", async (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    await runDetection(f);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      await runDetection(files[0]);
+    } else {
+      batch.pages = [];
+      batch.currentIndex = -1;
+      filmstrip.setPages([]);
+      for (const f of files) await addPageToBatch(f);
+    }
   });
   $("export").addEventListener("click", () => {
     const bytes = state.app.exportZip();
@@ -294,6 +326,69 @@ function downloadBlob(blob, name) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function addPageToBatch(blob) {
+  const thumbnailUrl = URL.createObjectURL(blob);
+  batch.pages.push({
+    blob,
+    thumbnailUrl,
+    status: "untouched",
+    persisted: null,
+  });
+  filmstrip.setPages(batch.pages);
+  if (batch.currentIndex < 0) {
+    await loadBatchPage(0);
+  }
+}
+
+async function loadBatchPage(i) {
+  if (batch.currentIndex >= 0 && batch.currentIndex !== i) saveCurrentPage();
+  batch.currentIndex = i;
+  filmstrip.setCurrent(i);
+  const page = batch.pages[i];
+  state.app.resetForBatch();
+  await runDetection(page.blob);
+  if (page.persisted) rehydrate(page.persisted);
+  if (page.status === "untouched") {
+    page.status = "in-progress";
+    filmstrip.setStatus(i, "in-progress");
+  }
+}
+
+function saveCurrentPage() {
+  const i = batch.currentIndex;
+  if (i < 0) return;
+  let regions = [];
+  try {
+    regions = state.app.listRegions() ?? [];
+  } catch { /* listRegions requires DocsegApp initialized — skip otherwise */ }
+  batch.pages[i].persisted = {
+    boxes: state.lastDetection?.boxes ?? [],
+    regions,
+    order: state.lastDetection?.order ?? [],
+  };
+}
+
+function rehydrate(snap) {
+  if (!snap) return;
+  for (const b of (snap.boxes ?? []).filter((b) => b.manual)) {
+    const xs = b.quad.map((p) => p[0]);
+    const ys = b.quad.map((p) => p[1]);
+    state.app.addBoxManual(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+  }
+  for (const r of snap.regions ?? []) {
+    state.app.addRegion(r.xmin, r.ymin, r.xmax, r.ymax, r.role, r.rank);
+  }
+}
+
+function touchCurrentPage() {
+  const i = batch.currentIndex;
+  if (i < 0 || !batch.pages[i]) return;
+  if (batch.pages[i].status === "untouched") {
+    batch.pages[i].status = "in-progress";
+    filmstrip.setStatus(i, "in-progress");
+  }
 }
 
 main().catch((e) => {
