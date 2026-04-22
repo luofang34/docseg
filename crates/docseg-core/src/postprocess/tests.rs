@@ -65,11 +65,17 @@ use super::charboxes_from_heatmap;
 use crate::preprocess::PreprocessOutput;
 
 fn fake_preproc(padded_w: u32, padded_h: u32, scale: f32) -> PreprocessOutput {
+    // original_size chosen large enough that none of the tests' synthetic
+    // blobs are ever rejected as out-of-bounds. Each test with a small
+    // padded size sets its scale so mapped coordinates stay within this.
+    let orig_w = ((padded_w as f32) / scale).ceil() as u32;
+    let orig_h = ((padded_h as f32) / scale).ceil() as u32;
     PreprocessOutput {
         tensor: Vec::new(),
         padded_size: (padded_w, padded_h),
         scale,
         pad_offset: (0, 0),
+        original_size: (orig_w, orig_h),
     }
 }
 
@@ -149,4 +155,41 @@ fn charbox_aspect_filter_drops_long_thin_streaks() {
         },
     );
     assert!(boxes.is_empty(), "got {} boxes; expected 0", boxes.len());
+}
+
+#[test]
+fn pad_region_ghost_component_is_dropped() {
+    // Heatmap 32x32, padded 64x64, scale 1.0 — so original 64x64. A blob at
+    // heatmap (20, 20) maps to padded-input centroid (40, 40). If we say
+    // original was only 30x30, that centroid lands at (40, 40) in original
+    // space — outside the 30x30 image, i.e. a pad-region ghost.
+    let mut map = vec![0.0_f32; 32 * 32];
+    for y in 19..21 {
+        for x in 19..21 {
+            map[y * 32 + x] = 0.9;
+        }
+    }
+    let preproc = PreprocessOutput {
+        tensor: Vec::new(),
+        padded_size: (64, 64),
+        scale: 1.0,
+        pad_offset: (0, 0),
+        original_size: (30, 30),
+    };
+    let boxes = charboxes_from_heatmap(
+        &map,
+        32,
+        32,
+        &preproc,
+        PostprocessOptions {
+            region_threshold: 0.5,
+            min_component_area_px: 1,
+            max_aspect_ratio: 8.0,
+        },
+    );
+    assert!(
+        boxes.is_empty(),
+        "pad-region ghost should have been dropped, got {} boxes",
+        boxes.len()
+    );
 }

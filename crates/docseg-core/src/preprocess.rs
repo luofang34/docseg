@@ -41,6 +41,12 @@ pub struct PreprocessOutput {
     /// Padding added before the scaled image in model space `(x, y)`. Always `(0, 0)`
     /// because we paste the scaled image at the top-left and pad right+bottom.
     pub pad_offset: (u32, u32),
+    /// Original-image dimensions `(width, height)` before any scaling.
+    /// Downstream uses this to drop components that fall in the letterbox
+    /// pad region — CRAFT can hallucinate mid-confidence activations over
+    /// the zero-filled pad area, and those ghosts otherwise map to out-of-
+    /// image coordinates.
+    pub original_size: (u32, u32),
 }
 
 /// Run the full preprocess pipeline.
@@ -106,6 +112,7 @@ pub fn preprocess(
         padded_size: (side, side),
         scale,
         pad_offset: (0, 0),
+        original_size: (w, h),
     })
 }
 

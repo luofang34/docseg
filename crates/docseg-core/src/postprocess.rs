@@ -147,6 +147,9 @@ pub fn charboxes_from_heatmap(
         if quad_aspect(&quad) > opts.max_aspect_ratio {
             continue;
         }
+        if !quad_centroid_inside(&quad, preproc.original_size) {
+            continue;
+        }
         out.push(CharBox { quad, score });
     }
     out
@@ -169,6 +172,12 @@ fn dist(a: Point, b: Point) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     (dx * dx + dy * dy).sqrt()
+}
+
+fn quad_centroid_inside(q: &Quad, (w, h): (u32, u32)) -> bool {
+    let cx = (q.points[0].x + q.points[1].x + q.points[2].x + q.points[3].x) / 4.0;
+    let cy = (q.points[0].y + q.points[1].y + q.points[2].y + q.points[3].y) / 4.0;
+    cx >= 0.0 && cx < w as f32 && cy >= 0.0 && cy < h as f32
 }
 
 #[cfg(test)]

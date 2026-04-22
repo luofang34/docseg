@@ -35,40 +35,23 @@ fn synthetic_three_blobs() -> DynamicImage {
 #[ignore = "requires models/craft_mlt_25k.onnx"]
 fn end_to_end_detects_three_blobs() {
     let img = synthetic_three_blobs();
-    let (orig_w, orig_h) = (img.width(), img.height());
     let pre = preprocess(&img, PreprocessOptions::default()).expect("preprocess");
 
     let bytes = model_bytes();
     let session = pollster::block_on(CraftSession::from_bytes(&bytes)).expect("load");
     let region = pollster::block_on(session.run(&pre)).expect("inference");
 
-    // Zero the heatmap's pad region. CRAFT produces scattered mid-confidence
-    // activations across the zero-padded area that look like "characters" in
-    // original-image coordinates well outside the 320×320 page. The real
-    // inference path for full-canvas inputs (`padded == scaled`) doesn't have
-    // this concern; a production caller feeding a smaller image would mask the
-    // same way.
-    let (padded_w, padded_h) = pre.padded_size;
-    let valid_map_w = (((orig_w as f32) * pre.scale).round() as u32 * region.width) / padded_w;
-    let valid_map_h = (((orig_h as f32) * pre.scale).round() as u32 * region.height) / padded_h;
-    let mut masked = region.data.clone();
-    for y in 0..region.height {
-        for x in 0..region.width {
-            if x >= valid_map_w || y >= valid_map_h {
-                masked[(y as usize) * (region.width as usize) + (x as usize)] = 0.0;
-            }
-        }
-    }
-
     // Looser threshold than the default (synthetic solid-fill shapes score
     // lower than natural text under CRAFT) and a modest area filter to keep
     // CRAFT's scattered single-pixel activations from becoming "boxes."
+    // Pad-region ghosts are filtered inside `charboxes_from_heatmap` via the
+    // `PreprocessOutput::original_size` centroid check.
     let opts = PostprocessOptions {
         region_threshold: 0.2,
         min_component_area_px: 8,
         max_aspect_ratio: 8.0,
     };
-    let boxes = charboxes_from_heatmap(&masked, region.width, region.height, &pre, opts);
+    let boxes = charboxes_from_heatmap(&region.data, region.width, region.height, &pre, opts);
 
     // Three blobs — tolerate ±1 in case CRAFT accidentally merges or splits.
     println!(
