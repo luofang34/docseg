@@ -8,6 +8,7 @@
 //! `wasm32` targets — the browser inference path lives in `docseg-web`.
 
 pub mod batch;
+pub mod batch_persist;
 pub mod diff;
 pub mod edit_log;
 pub mod error;
@@ -23,6 +24,7 @@ pub mod reading_order;
 pub mod regions;
 
 pub use batch::{Batch, Page, PageStatus, SliderDefaults, SliderValues, CURRENT_SCHEMA_VERSION};
+pub use batch_persist::{from_zip, to_zip};
 pub use diff::{compute_diff, DiffEntry};
 pub use edit_log::{EditEvent, EditLog};
 pub use error::CoreError;
