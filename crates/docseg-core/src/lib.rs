@@ -11,5 +11,7 @@ pub mod preprocess;
 
 pub use error::CoreError;
 pub use geometry::{min_area_quad, Point, Quad};
-pub use postprocess::{components_from_heatmap, PostprocessOptions};
+pub use postprocess::{
+    charboxes_from_heatmap, components_from_heatmap, CharBox, PostprocessOptions,
+};
 pub use preprocess::{preprocess, PreprocessOptions, PreprocessOutput};

@@ -60,3 +60,93 @@ fn empty_or_zero_size_heatmap_returns_no_components() {
     let map = vec![1.0_f32; 5];
     assert!(components_from_heatmap(&map, 4, 4, PostprocessOptions::default()).is_empty());
 }
+
+use super::charboxes_from_heatmap;
+use crate::preprocess::PreprocessOutput;
+
+fn fake_preproc(padded_w: u32, padded_h: u32, scale: f32) -> PreprocessOutput {
+    PreprocessOutput {
+        tensor: Vec::new(),
+        padded_size: (padded_w, padded_h),
+        scale,
+        pad_offset: (0, 0),
+    }
+}
+
+#[test]
+fn charbox_maps_back_to_original_image_coords() {
+    // Padded input 64x64, heatmap 32x32. Scale 0.5 — so original image was 128x128.
+    // Put a 4x4 blob starting at (8, 8) in heatmap space. That cell maps to
+    // padded-input region (16, 16)..(24, 24) and original region (32, 32)..(48, 48).
+    let mut map = vec![0.0_f32; 32 * 32];
+    for y in 8..12 {
+        for x in 8..12 {
+            map[y * 32 + x] = 0.9;
+        }
+    }
+    let boxes = charboxes_from_heatmap(
+        &map,
+        32,
+        32,
+        &fake_preproc(64, 64, 0.5),
+        PostprocessOptions {
+            region_threshold: 0.5,
+            min_component_area_px: 1,
+            max_aspect_ratio: 8.0,
+        },
+    );
+    assert_eq!(boxes.len(), 1);
+    let b = &boxes[0];
+    let xs: Vec<f32> = b.quad.points.iter().map(|p| p.x).collect();
+    let ys: Vec<f32> = b.quad.points.iter().map(|p| p.y).collect();
+    let xmin = xs.iter().copied().fold(f32::INFINITY, f32::min);
+    let xmax = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let ymin = ys.iter().copied().fold(f32::INFINITY, f32::min);
+    let ymax = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    assert!((xmin - 32.0).abs() < 4.0, "xmin={xmin}");
+    assert!((xmax - 48.0).abs() < 4.0, "xmax={xmax}");
+    assert!((ymin - 32.0).abs() < 4.0);
+    assert!((ymax - 48.0).abs() < 4.0);
+    assert!(b.score > 0.5);
+}
+
+#[test]
+fn charbox_area_filter_drops_small_blobs() {
+    // 1-pixel blob shouldn't survive min_component_area_px = 5.
+    let mut map = vec![0.0_f32; 32 * 32];
+    map[10 * 32 + 10] = 1.0;
+    let boxes = charboxes_from_heatmap(
+        &map,
+        32,
+        32,
+        &fake_preproc(64, 64, 1.0),
+        PostprocessOptions {
+            region_threshold: 0.5,
+            min_component_area_px: 5,
+            max_aspect_ratio: 8.0,
+        },
+    );
+    assert!(boxes.is_empty());
+}
+
+#[test]
+fn charbox_aspect_filter_drops_long_thin_streaks() {
+    // 1×20 horizontal streak in a 32x32 map: aspect ratio 20, should be
+    // dropped with max_aspect_ratio = 8.
+    let mut map = vec![0.0_f32; 32 * 32];
+    for x in 5..25 {
+        map[10 * 32 + x] = 1.0;
+    }
+    let boxes = charboxes_from_heatmap(
+        &map,
+        32,
+        32,
+        &fake_preproc(64, 64, 1.0),
+        PostprocessOptions {
+            region_threshold: 0.5,
+            min_component_area_px: 1,
+            max_aspect_ratio: 8.0,
+        },
+    );
+    assert!(boxes.is_empty(), "got {} boxes; expected 0", boxes.len());
+}
